@@ -1,0 +1,809 @@
+import React, { useEffect, useState } from 'react';
+import { 
+  X, Plus, Trash2, Save, Sliders, Sparkles, CheckCircle2, RefreshCw, 
+  Eye, Replace, FileText, Filter, Bot, ShieldCheck, Tag, Link2, Globe, Cpu, Key
+} from 'lucide-react';
+import { TelegramConnection, AdvancedSettings, TextReplacementRule, RewriteMode, ContentFilter, AiProvider } from '../types';
+import { updateConnectionSettings, testAiApi } from '../services/api';
+
+interface AdvancedSettingsModalProps {
+  connection: TelegramConnection | null;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+const PROVIDERS: {
+  id: AiProvider;
+  name: string;
+  badge: string;
+  icon: string;
+  color: string;
+  keyLink: string;
+  keyTip: string;
+  models: { id: string; label: string }[];
+}[] = [
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    badge: 'پیش‌فرض / رایگان',
+    icon: '🤖',
+    color: 'border-purple-500/30 text-purple-300 bg-purple-950/20',
+    keyLink: 'https://aistudio.google.com/app/apikey',
+    keyTip: 'کلید رایگان از گوگل AI Studio (با جیمیل)',
+    models: [
+      { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (پیشنهادی - هوشمند و سریع)' },
+      { id: 'gemini-flash-latest', label: 'Gemini Flash Latest (آخرین نسخه فلاش)' },
+      { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite (فوق‌العاده سریع)' },
+      { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (استدلال پیشرفته و کیفیت بالا)' },
+    ],
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI (ChatGPT)',
+    badge: 'GPT-4o & GPT-4o-mini',
+    icon: '⚡',
+    color: 'border-emerald-500/30 text-emerald-300 bg-emerald-950/20',
+    keyLink: 'https://platform.openai.com/api-keys',
+    keyTip: 'کلید اختصاصی از OpenAI Platform',
+    models: [
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini (سریع، کم‌هزینه و هوشمند)' },
+      { id: 'gpt-4o', label: 'GPT-4o (قدرتمندترین مدل هوش مصنوعی)' },
+      { id: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+      { id: 'o3-mini', label: 'o3-mini (مدل استدلالی)' },
+    ],
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek AI',
+    badge: 'DeepSeek V3 & R1',
+    icon: '🐳',
+    color: 'border-cyan-500/30 text-cyan-300 bg-cyan-950/20',
+    keyLink: 'https://platform.deepseek.com/api_keys',
+    keyTip: 'کلید اقتصادی از پنل DeepSeek',
+    models: [
+      { id: 'deepseek-chat', label: 'DeepSeek V3 (DeepSeek Chat - بسیار عالی)' },
+      { id: 'deepseek-reasoner', label: 'DeepSeek R1 (Reasoner - استدلال پیشرفته)' },
+    ],
+  },
+  {
+    id: 'claude',
+    name: 'Anthropic Claude',
+    badge: 'Claude 3.5 Sonnet',
+    icon: '🧠',
+    color: 'border-amber-500/30 text-amber-300 bg-amber-950/20',
+    keyLink: 'https://console.anthropic.com/settings/keys',
+    keyTip: 'کلید اختصاصی از Console Anthropic',
+    models: [
+      { id: 'claude-3-5-sonnet-latest', label: 'Claude 3.5 Sonnet (بهترین در نگارش فارسی)' },
+      { id: 'claude-3-5-haiku-latest', label: 'Claude 3.5 Haiku (فوق‌العاده سریع)' },
+      { id: 'claude-3-opus-latest', label: 'Claude 3 Opus' },
+    ],
+  },
+  {
+    id: 'custom_openai',
+    name: 'سرویس دلخواه / OpenRouter / Groq',
+    badge: 'API استاندارد OpenAI',
+    icon: '🌐',
+    color: 'border-blue-500/30 text-blue-300 bg-blue-950/20',
+    keyLink: 'https://openrouter.ai/keys',
+    keyTip: 'اتصال به OpenRouter, Groq, Together, Ollama یا سرور شخصی',
+    models: [
+      { id: 'meta-llama/llama-3.3-70b-instruct', label: 'OpenRouter: Llama 3.3 70B' },
+      { id: 'llama-3.3-70b-versatile', label: 'Groq: Llama 3.3 70B Versatile' },
+      { id: 'deepseek/deepseek-r1', label: 'OpenRouter: DeepSeek R1' },
+      { id: 'custom', label: 'نام مدل سفارشی دلخواه (تایپ دستی)' },
+    ],
+  },
+];
+
+export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ connection, onClose, onSaved }) => {
+  const [rewriteMode, setRewriteMode] = useState<RewriteMode>('none');
+  const [aiPrompt, setAiPrompt] = useState<string>('متن زیر را به صورت جذاب، روان، خوانا و پرمخاطب بازنویسی کن:');
+  
+  // AI Settings State
+  const [aiProvider, setAiProvider] = useState<AiProvider>('gemini');
+  const [aiApiKey, setAiApiKey] = useState<string>('');
+  const [aiModel, setAiModel] = useState<string>('gemini-3.6-flash');
+  const [aiCustomBaseUrl, setAiCustomBaseUrl] = useState<string>('https://openrouter.ai/api/v1');
+  const [customModelInput, setCustomModelInput] = useState<string>('');
+
+  const [replacements, setReplacements] = useState<TextReplacementRule[]>([]);
+  const [signature, setSignature] = useState<string>('');
+  const [removeSourceLinks, setRemoveSourceLinks] = useState<boolean>(true);
+  const [cleanTagsAndLinks, setCleanTagsAndLinks] = useState<boolean>(false);
+  const [contentFilter, setContentFilter] = useState<ContentFilter>('all');
+
+  const [saving, setSaving] = useState<boolean>(false);
+  const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
+
+  // Live AI Test States
+  const [testingAi, setTestingAi] = useState<boolean>(false);
+  const [aiTestResult, setAiTestResult] = useState<string | null>(null);
+  const [aiTestError, setAiTestError] = useState<string | null>(null);
+
+  // Live Preview Sample Text
+  const [sampleText, setSampleText] = useState<string>('');
+
+  useEffect(() => {
+    if (connection) {
+      const s = connection.settings || {};
+      setRewriteMode(s.rewriteMode || 'none');
+      setAiPrompt(s.aiPrompt || 'متن زیر را به صورت جذاب، روان، خوانا و پرمخاطب بازنویسی کن:');
+      
+      const prov = s.aiProvider || 'gemini';
+      setAiProvider(prov);
+      setAiApiKey(s.aiApiKey || s.geminiApiKey || '');
+      let loadedModel = s.aiModel;
+      if (prov === 'gemini') {
+        if (!loadedModel || loadedModel === 'gemini-2.0-flash' || loadedModel === 'gemini-1.5-flash') {
+          loadedModel = 'gemini-3.6-flash';
+        } else if (loadedModel === 'gemini-1.5-pro') {
+          loadedModel = 'gemini-3.1-pro-preview';
+        }
+      } else if (!loadedModel) {
+        loadedModel = prov === 'openai' ? 'gpt-4o-mini' : prov === 'deepseek' ? 'deepseek-chat' : prov === 'claude' ? 'claude-3-5-sonnet-latest' : 'meta-llama/llama-3.3-70b-instruct';
+      }
+      setAiModel(loadedModel);
+      setAiCustomBaseUrl(s.aiCustomBaseUrl || 'https://openrouter.ai/api/v1');
+
+      setReplacements(s.replacements || []);
+      setSignature(s.signature !== undefined ? s.signature : `🆔 ${connection.targetChannel}`);
+      setRemoveSourceLinks(s.removeSourceLinks !== undefined ? s.removeSourceLinks : true);
+      setCleanTagsAndLinks(!!s.cleanTagsAndLinks);
+      setContentFilter(s.contentFilter || 'all');
+
+      setSampleText(
+        `پست جدید در کانال ${connection.sourceChannel}\nبرای خرید و ثبت سفارش به آیدی ${connection.sourceChannel} پیام دهید.\nلینک کانال: https://t.me/${connection.sourceChannel.replace('@', '')}\n#فروشگاه #تخفیف`
+      );
+    }
+  }, [connection]);
+
+  if (!connection) return null;
+
+  const currentProviderConfig = PROVIDERS.find((p) => p.id === aiProvider) || PROVIDERS[0];
+
+  const handleProviderSelect = (pId: AiProvider) => {
+    setAiProvider(pId);
+    const target = PROVIDERS.find((p) => p.id === pId);
+    if (target && target.models.length > 0) {
+      setAiModel(target.models[0].id);
+    }
+  };
+
+  const handleTestAi = async () => {
+    setTestingAi(true);
+    setAiTestResult(null);
+    setAiTestError(null);
+
+    const activeModel = aiModel === 'custom' ? customModelInput.trim() : aiModel;
+
+    try {
+      const data = await testAiApi({
+        provider: aiProvider,
+        apiKey: aiApiKey.trim(),
+        model: activeModel,
+        customBaseUrl: aiCustomBaseUrl.trim(),
+        prompt: aiPrompt.trim(),
+        sampleText: sampleText.trim() || 'این یک نمونه متن برای تست هوش مصنوعی است.',
+      });
+      if (data && data.result) {
+        setAiTestResult(data.result);
+      } else {
+        setAiTestError('پاسخی از هوش مصنوعی دریافت نشد.');
+      }
+    } catch (err: any) {
+      setAiTestError(err.message || 'خطا در ارتباط با سرور');
+    } finally {
+      setTestingAi(false);
+    }
+  };
+
+  const handleAddRule = () => {
+    setReplacements([
+      ...replacements,
+      { id: `rule_${Date.now()}`, find: '', replace: '', isRegex: false },
+    ]);
+  };
+
+  const handleRemoveRule = (id: string) => {
+    setReplacements(replacements.filter((r) => r.id !== id));
+  };
+
+  const handleRuleChange = (id: string, field: 'find' | 'replace' | 'isRegex', value: any) => {
+    setReplacements(
+      replacements.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+    );
+  };
+
+  const handleQuickAddSourceReplace = () => {
+    const cleanSource = connection.sourceChannel.replace(/^@/, '');
+    const cleanTarget = connection.targetChannel.replace(/^@/, '');
+    setReplacements([
+      ...replacements,
+      {
+        id: `rule_${Date.now()}`,
+        find: `@${cleanSource}`,
+        replace: `@${cleanTarget}`,
+        isRegex: false,
+      },
+    ]);
+  };
+
+  // Preview Transformation Computation
+  const getTransformedPreview = () => {
+    let text = sampleText;
+    if (!text && !signature) return '';
+
+    const cleanEmptyIdLines = (str: string): string => {
+      if (!str) return '';
+      let cleaned = str.replace(/^[ \t]*(آیدی|شناسه|لینک|کانال)?[ \t:]*🆔[ \t:\-–—]*@?[ \t]*$/gm, '');
+      cleaned = cleaned.replace(/🆔[ \t]*(\r?\n[ \t]*)*🆔/g, '🆔');
+      cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+      return cleaned.trim();
+    };
+
+    const cleanSource = connection.sourceChannel.replace(/^@/, '');
+    const cleanTarget = connection.targetChannel.replace(/^@/, '');
+
+    // 1. Clean Source Links & Handles
+    if (removeSourceLinks || cleanTagsAndLinks) {
+      if (cleanSource) {
+        const sourceRegex = new RegExp(`@?${cleanSource}`, 'gi');
+        text = text.replace(sourceRegex, cleanTarget ? `@${cleanTarget}` : '');
+
+        const tmeRegex = new RegExp(`https?:\\/\\/t\\.me\\/(s\\/)?${cleanSource}[^\\s]*`, 'gi');
+        text = text.replace(tmeRegex, '');
+      }
+
+      if (cleanTagsAndLinks) {
+        // Remove all HTML anchor tags and broken fragments like <a href=" or <a href="...">
+        text = text.replace(/<a\s+href=["']?[^"'>]*["']?>?/gi, '');
+        text = text.replace(/<a\b[^>]*>?/gi, '');
+        text = text.replace(/<\/a>/gi, '');
+        text = text.replace(/<a\s+href="?/gi, '');
+        text = text.replace(/<[^>]+>/g, '');
+
+        // Remove all URLs, t.me links, usernames, and hashtags
+        text = text.replace(/https?:\/\/[^\s<]+/g, '');
+        text = text.replace(/t\.me\/[^\s<]+/g, '');
+        text = text.replace(/@[a-zA-Z0-9_]+/g, '');
+        text = text.replace(/#[a-zA-Z0-9_آ-ی]+/g, '');
+        text = text.replace(/\n{3,}/g, '\n\n');
+      }
+    }
+
+    text = cleanEmptyIdLines(text);
+
+    // 2. Mode preview
+    if (rewriteMode === 'ai') {
+      const pName = currentProviderConfig.name;
+      const mName = aiModel === 'custom' ? (customModelInput || 'سفارشی') : aiModel;
+      text = `[✨ بازنویسی هوش مصنوعی (${pName} - ${mName})]: \n"محتوای جدید و جذابی بر اساس متن اصلی تولید خواهد شد."`;
+    } else if (rewriteMode === 'replace') {
+      for (const rule of replacements) {
+        if (!rule.find) continue;
+        const repVal = rule.replace || '';
+        if (rule.isRegex) {
+          try {
+            const reg = new RegExp(rule.find, 'gi');
+            text = text.replace(reg, repVal);
+          } catch (e) {
+            text = text.split(rule.find).join(repVal);
+          }
+        } else {
+          text = text.split(rule.find).join(repVal);
+        }
+      }
+    }
+
+    // 3. Append Signature
+    if (signature && signature.trim()) {
+      text = `${text.trim()}\n\n${signature.trim()}`;
+    }
+
+    return cleanEmptyIdLines(text);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSavedSuccess(false);
+    try {
+      const activeModel = aiModel === 'custom' ? customModelInput.trim() : aiModel;
+      const newSettings: AdvancedSettings = {
+        rewriteMode,
+        aiPrompt,
+        aiProvider,
+        aiApiKey,
+        aiModel: activeModel,
+        aiCustomBaseUrl,
+        geminiApiKey: aiProvider === 'gemini' ? aiApiKey : undefined,
+        replacements: replacements.filter((r) => r.find.trim() !== ''),
+        signature,
+        removeSourceLinks,
+        cleanTagsAndLinks,
+        contentFilter,
+      };
+      await updateConnectionSettings(connection.id, newSettings);
+      setSavedSuccess(true);
+      onSaved();
+      setTimeout(() => {
+        setSavedSuccess(false);
+        onClose();
+      }, 1000);
+    } catch (err: any) {
+      alert(err.message || 'خطا در ذخیره تنظیمات');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 md:p-4">
+      <div className="neu-flat w-full max-w-4xl max-h-[92vh] flex flex-col border border-white/10 overflow-hidden shadow-2xl">
+        
+        {/* Modal Header */}
+        <div className="p-5 border-b border-white/5 flex items-center justify-between bg-black/20">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 neu-inset rounded-xl text-yellow-400">
+              <Sliders className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-white">تنظیمات پیشرفته و فیلترهای هوشمند</h3>
+              <p className="text-xs text-slate-400 mt-0.5 dir-ltr text-right">
+                {connection.sourceChannel} ➔ {connection.targetChannel}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={onClose}
+            className="neu-btn-secondary p-2 text-slate-300 hover:text-red-400"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-5 overflow-y-auto flex-1 space-y-6">
+          
+          {/* Section 1: Content Filter (چه محتواهایی فوروارد شوند؟) */}
+          <div className="neu-inset p-4 space-y-3 border border-white/5">
+            <div className="flex items-center gap-2 text-xs font-bold text-yellow-400">
+              <Filter className="w-4 h-4" />
+              <span>چه محتواهایی فوروارد شوند؟ (فیلتر محتوا)</span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+              {[
+                { id: 'all', title: 'همه محتواها', desc: 'متن، عکس، ویدیو، ویس و ویدیومسیج' },
+                { id: 'text_only', title: 'فقط متن‌ها', desc: 'بدون هیچ فایل یا رسانه' },
+                { id: 'text_and_photo', title: 'متن و عکس', desc: 'ارسال عکس و متن' },
+                { id: 'text_and_video', title: 'متن و ویدیو', desc: 'ارسال ویدیو و متن' },
+                { id: 'text_and_voice', title: 'متن و ویس (صوتی)', desc: 'ارسال پیام‌های صوتی و ویس' },
+                { id: 'text_and_video_note', title: 'متن و ویس ویدیو (دایره‌ای)', desc: 'ارسال ویدیوهای دایره‌ای (ویس ویدیو)' },
+                { id: 'voice_only', title: 'فقط ویس‌های صوتی', desc: 'فقط پیام صوتی/ویس' },
+                { id: 'video_note_only', title: 'فقط ویس ویدیو', desc: 'فقط ویدیو دایره‌ای' },
+              ].map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  onClick={() => setContentFilter(item.id as ContentFilter)}
+                  className={`p-3 rounded-xl border text-right transition-all flex flex-col justify-between ${
+                    contentFilter === item.id
+                      ? 'bg-yellow-400/10 border-yellow-400 text-yellow-400 shadow-lg'
+                      : 'bg-black/20 border-white/5 text-slate-400 hover:border-white/20'
+                  }`}
+                >
+                  <span className="text-xs font-bold block">{item.title}</span>
+                  <span className="text-[10px] text-slate-500 mt-1">{item.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Section 2: Text Rewrite Mode (تغییر و بازنویسی متن پیام) */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-white">
+              <Sparkles className="w-4 h-4 text-purple-400" />
+              <span>تغییر و بازنویسی متن پیام</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[
+                { id: 'none', label: 'بدون تغییر', desc: 'ارسال دقیق متن اصلی' },
+                { id: 'ai', label: 'بازنویسی با هوش مصنوعی', desc: 'بازنویسی هوشمند توسط Gemini' },
+                { id: 'replace', label: 'جایگزینی کلمات', desc: 'تغییر کلمات بر اساس قوانین شما' },
+              ].map((mode) => (
+                <button
+                  type="button"
+                  key={mode.id}
+                  onClick={() => setRewriteMode(mode.id as RewriteMode)}
+                  className={`p-3.5 rounded-xl border text-right transition-all ${
+                    rewriteMode === mode.id
+                      ? 'bg-blue-500/15 border-blue-400 text-blue-400 font-bold'
+                      : 'bg-black/20 border-white/5 text-slate-400 hover:border-white/20'
+                  }`}
+                >
+                  <div className="text-xs font-bold">{mode.label}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">{mode.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* AI Custom Prompt & API Key Option if AI mode active */}
+            {rewriteMode === 'ai' && (
+              <div className="neu-inset p-4 space-y-4 rounded-xl border border-purple-500/30 bg-purple-950/15">
+                <div className="flex items-center justify-between border-b border-purple-500/20 pb-2.5">
+                  <div className="flex items-center gap-2 text-xs font-bold text-purple-300">
+                    <Bot className="w-4.5 h-4.5 text-purple-400" />
+                    <span>تنظیمات موتور هوش مصنوعی</span>
+                  </div>
+                  <span className="text-[11px] font-semibold text-purple-300 bg-purple-500/15 px-2.5 py-0.5 rounded-full border border-purple-500/30 flex items-center gap-1">
+                    <span>{currentProviderConfig.icon}</span>
+                    <span>{currentProviderConfig.name}</span>
+                  </span>
+                </div>
+
+                {/* Provider Selector */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold text-purple-200">
+                    ۱. انتخاب سرویس هوش مصنوعی (Provider):
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                    {PROVIDERS.map((p) => (
+                      <button
+                        type="button"
+                        key={p.id}
+                        onClick={() => handleProviderSelect(p.id)}
+                        className={`p-2.5 rounded-xl border text-center transition-all flex flex-col items-center gap-1 ${
+                          aiProvider === p.id
+                            ? 'bg-purple-600/25 border-purple-400 text-white font-bold ring-1 ring-purple-400 shadow-lg'
+                            : 'bg-black/40 border-white/10 text-slate-400 hover:border-purple-500/40 hover:text-purple-200'
+                        }`}
+                      >
+                        <span className="text-base">{p.icon}</span>
+                        <span className="text-xs font-bold line-clamp-1">{p.name}</span>
+                        <span className="text-[9px] text-purple-300/80 bg-purple-500/10 px-1.5 py-0.2 rounded-full border border-purple-500/20">
+                          {p.badge}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Model Selector */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold text-purple-200">
+                    ۲. انتخاب مدل هوش مصنوعی (Model):
+                  </label>
+                  <select
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                    className="w-full bg-black/60 border border-white/15 px-3 py-2 text-xs rounded-lg text-white focus:outline-none focus:border-purple-400 font-mono"
+                  >
+                    {currentProviderConfig.models.map((m) => (
+                      <option key={m.id} value={m.id} className="bg-slate-900 text-white">
+                        {m.label} ({m.id})
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* If custom model selected */}
+                  {aiModel === 'custom' && (
+                    <input
+                      type="text"
+                      value={customModelInput}
+                      onChange={(e) => setCustomModelInput(e.target.value)}
+                      placeholder="نام دقیق مدل را وارد کنید (مثلا: meta-llama/llama-3.3-70b-instruct)"
+                      className="w-full mt-1 bg-black/60 border border-purple-400 px-3 py-2 text-xs rounded-lg text-white placeholder-slate-500 focus:outline-none font-mono dir-ltr text-right"
+                    />
+                  )}
+                </div>
+
+                {/* Custom Base URL (Visible if custom_openai) */}
+                {aiProvider === 'custom_openai' && (
+                  <div className="space-y-1.5 bg-blue-950/20 p-2.5 rounded-lg border border-blue-500/30">
+                    <label className="block text-xs font-bold text-blue-300 flex items-center gap-1">
+                      <Globe className="w-3.5 h-3.5 text-blue-400" />
+                      <span>آدرس پایه API (Base URL):</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={aiCustomBaseUrl}
+                      onChange={(e) => setAiCustomBaseUrl(e.target.value)}
+                      placeholder="مثال: https://openrouter.ai/api/v1 یا https://api.groq.com/openai/v1"
+                      className="w-full bg-black/60 border border-white/15 px-3 py-2 text-xs rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-blue-400 font-mono dir-ltr text-right"
+                    />
+                  </div>
+                )}
+
+                {/* API Key Input */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-purple-200 flex items-center gap-1">
+                      <Key className="w-3.5 h-3.5 text-purple-400" />
+                      <span>کلید API Key ({currentProviderConfig.name}):</span>
+                    </label>
+                    {aiProvider === 'gemini' && (
+                      <span className="text-[10px] text-yellow-400 font-semibold">
+                        (در صورت خالی بودن از کلید پیش‌فرض سرور استفاده می‌شود)
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="password"
+                    value={aiApiKey}
+                    onChange={(e) => setAiApiKey(e.target.value)}
+                    placeholder={
+                      aiProvider === 'gemini'
+                        ? 'AIzaSy... (اختیاری برای Gemini)'
+                        : aiProvider === 'openai'
+                        ? 'sk-proj-... (کلید OpenAI)'
+                        : aiProvider === 'deepseek'
+                        ? 'sk-... (کلید DeepSeek)'
+                        : aiProvider === 'claude'
+                        ? 'sk-ant-api03-... (کلید Claude)'
+                        : 'کلید API سرویس مورد نظر'
+                    }
+                    className="w-full bg-black/60 border border-white/15 px-3 py-2 text-xs rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-purple-400 font-mono dir-ltr text-right"
+                  />
+                  <p className="text-[10px] text-slate-400 flex items-center gap-1">
+                    💡 <span className="text-purple-300">راهنما:</span> {currentProviderConfig.keyTip} ➔
+                    <a
+                      href={currentProviderConfig.keyLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-yellow-400 underline hover:text-yellow-300 font-bold"
+                    >
+                      دریافت کلید API
+                    </a>
+                  </p>
+                </div>
+
+                {/* AI Prompt Input */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold text-purple-200">
+                    دستور سفارشی برای هوش مصنوعی (AI Prompt):
+                  </label>
+                  <input
+                    type="text"
+                    value={aiPrompt}
+                    onChange={(e) => setAiPrompt(e.target.value)}
+                    placeholder="مثال: متن را با لحنی جذاب و پرمخاطب بازنویسی کن و هیچ لینک اضافه‌ای نزار"
+                    className="w-full bg-black/60 border border-white/15 px-3 py-2 text-xs rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-purple-400"
+                  />
+                </div>
+
+                {/* Live Test AI Button */}
+                <div className="pt-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTestAi}
+                    disabled={testingAi}
+                    className="neu-btn-secondary px-3 py-2 text-xs font-bold text-purple-300 border-purple-500/30 flex items-center justify-center gap-1.5 hover:bg-purple-500/20"
+                  >
+                    {testingAi ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-300" />
+                        <span>در حال ارسال درخواست به {currentProviderConfig.name}...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                        <span>تست زنده عملکرد ({currentProviderConfig.name})</span>
+                      </>
+                    )}
+                  </button>
+                  <span className="text-[10px] text-slate-400 text-center sm:text-right">
+                    متن نمونه پایین کادر برای تست زنده استفاده می‌شود
+                  </span>
+                </div>
+
+                {/* AI Test Results */}
+                {aiTestResult && (
+                  <div className="p-3 bg-purple-900/30 border border-purple-500/30 rounded-xl space-y-1">
+                    <span className="text-[11px] font-bold text-purple-300 block">✨ پاسخ هوش مصنوعی ({currentProviderConfig.name}):</span>
+                    <p className="text-xs text-purple-100 whitespace-pre-wrap">{aiTestResult}</p>
+                  </div>
+                )}
+
+                {aiTestError && (
+                  <div className="p-3 bg-red-950/40 border border-red-500/30 rounded-xl space-y-1 text-xs text-red-300">
+                    <span className="font-bold block">❌ خطا در اتصال به هوش مصنوعی:</span>
+                    <span>{aiTestError}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Word Replacement Rules Table if Replace mode active */}
+            {rewriteMode === 'replace' && (
+              <div className="neu-inset p-3.5 space-y-3 rounded-xl border border-blue-500/20">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-blue-300">لیست قوانین جایگزینی کلمات:</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleQuickAddSourceReplace}
+                      className="neu-btn-secondary px-2.5 py-1 text-[11px] font-semibold text-yellow-400"
+                    >
+                      + جایگزینی آیدی مبدأ با مقصد
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAddRule}
+                      className="neu-btn-primary px-2.5 py-1 text-[11px] font-bold text-black flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>افزودن کلمه</span>
+                    </button>
+                  </div>
+                </div>
+
+                {replacements.length === 0 ? (
+                  <div className="text-center text-xs text-slate-500 py-3">
+                    هیچ قانونی تعریف نشده است.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {replacements.map((rule, idx) => (
+                      <div key={rule.id} className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500 w-4">{idx + 1}.</span>
+                        <input
+                          type="text"
+                          value={rule.find}
+                          onChange={(e) => handleRuleChange(rule.id, 'find', e.target.value)}
+                          placeholder="کلمه/عبارت مبدأ"
+                          className="flex-1 bg-black/40 border border-white/10 px-2.5 py-1.5 text-xs rounded-lg text-white focus:border-yellow-400 dir-ltr text-right"
+                        />
+                        <span className="text-slate-500 text-xs">➔</span>
+                        <input
+                          type="text"
+                          value={rule.replace}
+                          onChange={(e) => handleRuleChange(rule.id, 'replace', e.target.value)}
+                          placeholder="کلمه جدید (یا خالی برای حذف)"
+                          className="flex-1 bg-black/40 border border-white/10 px-2.5 py-1.5 text-xs rounded-lg text-white focus:border-blue-400 dir-ltr text-right"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveRule(rule.id)}
+                          className="p-1.5 text-red-400 hover:text-red-300"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Section 3: Source Cleanup Controls */}
+          <div className="neu-inset p-4 space-y-3 border border-white/5">
+            <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4" />
+              <span>تنظیمات پاکسازی لینک‌ها و آیدی‌های کانال مبدأ</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <label className="flex items-start gap-3 neu-inset p-3 cursor-pointer hover:bg-white/5 transition-colors rounded-xl">
+                <input
+                  type="checkbox"
+                  checked={removeSourceLinks}
+                  onChange={(e) => setRemoveSourceLinks(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 accent-emerald-400 rounded"
+                />
+                <div className="text-xs">
+                  <span className="font-bold text-white block">حذف خودکار تمام لینک‌ها، منشن‌ها و آیدی‌های تلگرامی کانال مبدأ</span>
+                  <span className="text-slate-400 mt-0.5 block text-[11px]">
+                    جایگزینی یا حذف آیدی {connection.sourceChannel} و لینک‌های t.me مربوط به آن
+                  </span>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 neu-inset p-3 cursor-pointer hover:bg-white/5 transition-colors rounded-xl">
+                <input
+                  type="checkbox"
+                  checked={cleanTagsAndLinks}
+                  onChange={(e) => setCleanTagsAndLinks(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 accent-emerald-400 rounded"
+                />
+                <div className="text-xs">
+                  <span className="font-bold text-white block">پاکسازی کلی تمام تگ‌ها (#) و لینک‌های وب</span>
+                  <span className="text-slate-400 mt-0.5 block text-[11px]">
+                    حذف تمام لینک‌های اینترنتی و هشتگ‌های موجود در متن اصلی
+                  </span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          {/* Section 4: Signature / Tag (افزودن امضا یا تگ اختصاصی به پیام) */}
+          <div className="space-y-2">
+            <label className="block text-xs font-bold text-white flex items-center gap-1.5">
+              <Tag className="w-4 h-4 text-yellow-400" />
+              <span>افزودن امضا یا تگ اختصاصی به انتهای پیام (Signature / Tag):</span>
+            </label>
+            <div className="neu-inset p-2 rounded-xl">
+              <textarea
+                value={signature}
+                onChange={(e) => setSignature(e.target.value)}
+                placeholder={`مثال:\n🆔 ${connection.targetChannel}`}
+                rows={3}
+                className="w-full bg-transparent p-2 text-xs text-white placeholder-slate-500 focus:outline-none resize-none font-sans"
+              />
+            </div>
+          </div>
+
+          {/* Section 5: Live Interactive Preview */}
+          <div className="space-y-2 pt-2 border-t border-white/5">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
+              <Eye className="w-4 h-4" />
+              <span>پیش‌نمایش خروجی نهایی پیام:</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <span className="text-[11px] text-slate-400 mb-1 block">متن نمونه کانال مبدأ ({connection.sourceChannel}):</span>
+                <textarea
+                  value={sampleText}
+                  onChange={(e) => setSampleText(e.target.value)}
+                  rows={4}
+                  className="w-full p-2.5 text-xs rounded-xl focus:outline-none resize-none transition-all duration-200 preview-input-box"
+                />
+              </div>
+
+              <div>
+                <span className="text-[11px] text-emerald-400 font-bold mb-1 flex items-center gap-1.5 block">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+                  <span>خروجی ارسال شونده به ({connection.targetChannel}):</span>
+                </span>
+                <div className="w-full min-h-[96px] p-3 text-xs rounded-xl whitespace-pre-wrap font-sans transition-all duration-200 preview-output-box">
+                  {getTransformedPreview() || <span className="placeholder-text italic">پیش‌نمایش نشان داده خواهد شد...</span>}
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        {/* Modal Footer */}
+        <div className="p-4 border-t border-white/5 bg-black/20 flex justify-between items-center">
+          <button
+            type="button"
+            onClick={onClose}
+            className="neu-btn-secondary px-5 py-2.5 text-xs font-bold text-slate-300"
+          >
+            انصراف
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className="neu-btn-primary px-8 py-2.5 text-xs font-black flex items-center gap-2 text-black"
+          >
+            {savedSuccess ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-emerald-900" />
+                <span>ذخیره شد!</span>
+              </>
+            ) : saving ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin text-black" />
+                <span>در حال ذخیره‌سازی...</span>
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4" />
+                <span>ذخیره تغییرات</span>
+              </>
+            )}
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+};

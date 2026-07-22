@@ -1,0 +1,134 @@
+export type ConnectionStatus = 'active' | 'paused' | 'error' | 'connecting';
+
+export type RewriteMode = 'none' | 'ai' | 'replace';
+export type ContentFilter = 'all' | 'text_only' | 'text_and_photo' | 'text_and_video' | 'text_and_voice' | 'text_and_video_note' | 'voice_only' | 'video_note_only';
+export type AiProvider = 'gemini' | 'openai' | 'deepseek' | 'claude' | 'custom_openai';
+
+export interface TextReplacementRule {
+  id: string;
+  find: string;
+  replace: string;
+  isRegex?: boolean;
+}
+
+export interface AdvancedSettings {
+  rewriteMode: RewriteMode;
+  aiPrompt?: string;
+  aiProvider?: AiProvider;
+  aiApiKey?: string;
+  aiModel?: string;
+  aiCustomBaseUrl?: string;
+  geminiApiKey?: string; // backwards compatibility
+  replacements: TextReplacementRule[];
+  signature?: string;
+  removeSourceLinks?: boolean;
+  cleanTagsAndLinks?: boolean;
+  contentFilter: ContentFilter;
+}
+
+export interface TelegramConnection {
+  id: string;
+  sourceChannel: string;
+  targetChannel: string;
+  botToken: string;
+  status: ConnectionStatus;
+  lastMessageId: number | null;
+  lastMessageTime: string | null;
+  transferredCount: number;
+  createdAt: string;
+  lastError: string | null;
+  botName?: string;
+  sourceTitle?: string;
+  settings?: AdvancedSettings;
+}
+
+export interface ConnectionLog {
+  id: string;
+  connectionId: string;
+  timestamp: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+  message: string;
+  messageType?: string;
+  sourceMsgId?: number;
+}
+
+export interface ForwardedMessageRecord {
+  id: string;
+  connectionId: string;
+  sourceMsgId: number;
+  type: 'text' | 'photo' | 'video' | 'document' | 'audio' | 'voice' | 'video_note' | 'animation' | 'media_group';
+  caption?: string;
+  transferredAt: string;
+  status: 'success' | 'failed';
+  mediaUrl?: string;
+}
+
+export interface CreateConnectionDTO {
+  sourceChannel: string;
+  targetChannel: string;
+  botToken: string;
+  settings?: AdvancedSettings;
+}
+
+export interface ConnectionStats {
+  totalConnections: number;
+  activeConnections: number;
+  totalTransferred: number;
+  lastActivity: string | null;
+}
+
+export interface User {
+  id: string;
+  username: string;
+  fullName: string;
+  email: string;
+  phone?: string;
+  password?: string;
+  role: 'user' | 'admin';
+  plan: 'pro' | 'free' | 'vip';
+  subscriptionStatus: 'active' | 'inactive' | 'expired';
+  subscriptionExpireAt?: string | null; // ISO date string or null for lifetime
+  maxConnections?: number;
+  connectionsCount?: number;
+  createdAt: string;
+  token?: string;
+}
+
+export interface LoginDTO {
+  identifier: string; // username, email, or phone
+  password: string;
+}
+
+export interface RegisterDTO {
+  username: string;
+  fullName: string;
+  email: string;
+  phone?: string;
+  password: string;
+}
+
+export interface SubscriptionPlan {
+  id: 'free' | 'pro' | 'vip';
+  name: string;
+  badge: string;
+  priceMonthly: number; // in Tomans
+  description: string;
+  maxConnections: number;
+  features: string[];
+  recommended?: boolean;
+  color: string;
+}
+
+export interface RedeemCodeDTO {
+  code: string;
+}
+
+export interface PurchaseRequestDTO {
+  planId: 'pro' | 'vip';
+  billingCycleMonths: number;
+  paymentMethod: 'card_to_card' | 'online_gateway' | 'telegram_support';
+  transactionId?: string;
+  promoCode?: string;
+  amountPaid?: number;
+}
+

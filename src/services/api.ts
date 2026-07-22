@@ -1,0 +1,237 @@
+import { TelegramConnection, ConnectionLog, ForwardedMessageRecord, CreateConnectionDTO, ConnectionStats, AdvancedSettings, User, LoginDTO, RegisterDTO } from '../types';
+
+async function safeJsonFetch(url: string, options?: RequestInit, maxRetries = 5): Promise<any> {
+  let lastErr: any = null;
+  const mergedHeaders: Record<string, string> = {
+    'Accept': 'application/json',
+    ...(options?.headers as Record<string, string> || {}),
+  };
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, { ...options, headers: mergedHeaders });
+      const contentType = res.headers.get('content-type') || '';
+      
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch (_) {
+        // Response body is not JSON (e.g., HTML during server restart or proxy error)
+      }
+
+      if (!res.ok) {
+        if (data && data.error) {
+          throw new Error(data.error);
+        }
+        if (res.status >= 500 && attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+          continue;
+        }
+        throw new Error(data?.error || `خطا در دریافت اطلاعات (${res.status})`);
+      }
+
+      if (data !== null) {
+        return data;
+      }
+
+      if (!contentType.includes('application/json')) {
+        if (attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+          continue;
+        }
+        throw new Error('پاسخ سرور در قالب JSON معتبر نیست.');
+      }
+
+      throw new Error('پاسخ خالی یا نامعتبر از سرور دریافت شد.');
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('خطا در برقراری ارتباط با سرور.');
+}
+
+export async function fetchConnections(): Promise<{ connections: TelegramConnection[]; stats: ConnectionStats }> {
+  return safeJsonFetch('/api/connections');
+}
+
+export async function createConnection(dto: CreateConnectionDTO): Promise<TelegramConnection> {
+  return safeJsonFetch('/api/connections', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(dto),
+  });
+}
+
+export async function updateConnectionSettings(id: string, settings: AdvancedSettings): Promise<TelegramConnection> {
+  return safeJsonFetch(`/api/connections/${id}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function pauseConnection(id: string): Promise<TelegramConnection> {
+  return safeJsonFetch(`/api/connections/${id}/pause`, { method: 'POST' });
+}
+
+export async function resumeConnection(id: string): Promise<TelegramConnection> {
+  return safeJsonFetch(`/api/connections/${id}/resume`, { method: 'POST' });
+}
+
+export async function deleteConnection(id: string): Promise<void> {
+  await safeJsonFetch(`/api/connections/${id}`, { method: 'DELETE' });
+}
+
+export async function fetchConnectionLogs(id: string): Promise<ConnectionLog[]> {
+  return safeJsonFetch(`/api/connections/${id}/logs`);
+}
+
+export async function fetchConnectionMessages(id: string): Promise<ForwardedMessageRecord[]> {
+  return safeJsonFetch(`/api/connections/${id}/messages`);
+}
+
+export async function sendTestMessage(id: string): Promise<{ success: boolean; telegramSent: boolean; error?: string }> {
+  return safeJsonFetch(`/api/connections/${id}/test`, { method: 'POST' });
+}
+
+export async function triggerManualSync(id: string): Promise<TelegramConnection> {
+  return safeJsonFetch(`/api/connections/${id}/sync`, { method: 'POST' });
+}
+
+export async function testAiApi(payload: {
+  provider?: string;
+  apiKey?: string;
+  model?: string;
+  customBaseUrl?: string;
+  prompt?: string;
+  sampleText?: string;
+}): Promise<{ success: boolean; result: string }> {
+  return safeJsonFetch('/api/test-ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loginUser(dto: LoginDTO): Promise<{ user: User; token: string }> {
+  return safeJsonFetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(dto),
+  });
+}
+
+export async function registerUser(dto: RegisterDTO): Promise<{ user: User; token: string }> {
+  return safeJsonFetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(dto),
+  });
+}
+
+export async function fetchCurrentUser(token: string): Promise<User> {
+  return safeJsonFetch('/api/auth/me', {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+}
+
+export async function forgotPassword(identifier: string): Promise<{ success: boolean; message: string }> {
+  return safeJsonFetch('/api/auth/forgot-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier }),
+  });
+}
+
+export async function fetchAdminUsers(token: string): Promise<User[]> {
+  return safeJsonFetch('/api/admin/users', {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+}
+
+export async function updateAdminUserSubscription(
+  token: string,
+  userId: string,
+  data: {
+    subscriptionStatus?: 'active' | 'inactive' | 'expired';
+    plan?: string;
+    durationDays?: number | null;
+    customExpireAt?: string | null;
+    role?: 'user' | 'admin';
+    maxConnections?: number;
+  }
+): Promise<{ success: boolean; user: User }> {
+  return safeJsonFetch(`/api/admin/users/${userId}/subscription`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function createAdminUser(token: string, userData: any): Promise<{ success: boolean; user: User }> {
+  return safeJsonFetch('/api/admin/users', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(userData),
+  });
+}
+
+export async function deleteAdminUser(token: string, userId: string): Promise<{ success: boolean; message: string }> {
+  return safeJsonFetch(`/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+}
+
+export async function fetchSubscriptionPlans(): Promise<SubscriptionPlan[]> {
+  return safeJsonFetch('/api/subscriptions/plans');
+}
+
+export async function redeemGiftCode(
+  token: string,
+  code: string
+): Promise<{ success: boolean; message: string; user?: User; discountPercent?: number }> {
+  return safeJsonFetch('/api/subscriptions/redeem-code', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function submitPurchaseRequest(
+  token: string,
+  dto: PurchaseRequestDTO
+): Promise<{ success: boolean; message: string; user: User }> {
+  return safeJsonFetch('/api/subscriptions/purchase-request', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(dto),
+  });
+}
+
+
+

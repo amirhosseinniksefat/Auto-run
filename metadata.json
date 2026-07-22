@@ -1,0 +1,6 @@
+{
+  "name": "Auto run",
+  "description": "پلتفرم خودکار فروارد پیام از کانال‌های تلگرام به کانال مقصد",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
