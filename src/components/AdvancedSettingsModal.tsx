@@ -1,15 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { 
   X, Plus, Trash2, Save, Sliders, Sparkles, CheckCircle2, RefreshCw, 
-  Eye, Replace, FileText, Filter, Bot, ShieldCheck, Tag, Link2, Globe, Cpu, Key
+  Eye, Replace, FileText, Filter, Bot, ShieldCheck, Tag, Link2, Globe, Cpu, Key, Lock, Crown
 } from 'lucide-react';
-import { TelegramConnection, AdvancedSettings, TextReplacementRule, RewriteMode, ContentFilter, AiProvider } from '../types';
-import { updateConnectionSettings, testAiApi } from '../services/api';
+import { TelegramConnection, AdvancedSettings, TextReplacementRule, RewriteMode, ContentFilter, AiProvider, User } from '../types';
+import { updateConnectionSettings, testAiApi, testBaleBot } from '../services/api';
 
 interface AdvancedSettingsModalProps {
   connection: TelegramConnection | null;
   onClose: () => void;
   onSaved: () => void;
+  currentUser?: User | null;
+  onOpenSubscriptions?: () => void;
 }
 
 const PROVIDERS: {
@@ -96,7 +98,14 @@ const PROVIDERS: {
   },
 ];
 
-export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ connection, onClose, onSaved }) => {
+export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({
+  connection,
+  onClose,
+  onSaved,
+  currentUser,
+  onOpenSubscriptions,
+}) => {
+  const isSubscribed = currentUser?.role === 'admin' || (currentUser?.plan !== 'free' && currentUser?.subscriptionStatus === 'active');
   const [rewriteMode, setRewriteMode] = useState<RewriteMode>('none');
   const [aiPrompt, setAiPrompt] = useState<string>('متن زیر را به صورت جذاب، روان، خوانا و پرمخاطب بازنویسی کن:');
   
@@ -123,6 +132,13 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ co
 
   // Live Preview Sample Text
   const [sampleText, setSampleText] = useState<string>('');
+
+  // Bale Integration State
+  const [enableBale, setEnableBale] = useState<boolean>(false);
+  const [baleTargetChannel, setBaleTargetChannel] = useState<string>('');
+  const [baleBotToken, setBaleBotToken] = useState<string>('');
+  const [testingBale, setTestingBale] = useState<boolean>(false);
+  const [baleStatusMsg, setBaleStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
     if (connection) {
@@ -151,6 +167,10 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ co
       setRemoveSourceLinks(s.removeSourceLinks !== undefined ? s.removeSourceLinks : true);
       setCleanTagsAndLinks(!!s.cleanTagsAndLinks);
       setContentFilter(s.contentFilter || 'all');
+
+      setEnableBale(!!s.enableBale || !!connection.enableBale);
+      setBaleTargetChannel(s.baleTargetChannel || connection.baleTargetChannel || '');
+      setBaleBotToken(s.baleBotToken || connection.baleBotToken || '');
 
       setSampleText(
         `پست جدید در کانال ${connection.sourceChannel}\nبرای خرید و ثبت سفارش به آیدی ${connection.sourceChannel} پیام دهید.\nلینک کانال: https://t.me/${connection.sourceChannel.replace('@', '')}\n#فروشگاه #تخفیف`
@@ -304,6 +324,24 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ co
     return cleanEmptyIdLines(text);
   };
 
+  const handleTestBale = async () => {
+    if (!baleBotToken.trim() || !baleTargetChannel.trim()) {
+      setBaleStatusMsg({ type: 'error', text: 'لطفاً ابتدا توکن ربات بله و شناسه کانال بله را وارد کنید.' });
+      return;
+    }
+
+    setTestingBale(true);
+    setBaleStatusMsg(null);
+    try {
+      const res = await testBaleBot(baleBotToken.trim(), baleTargetChannel.trim());
+      setBaleStatusMsg({ type: 'success', text: res.message });
+    } catch (err: any) {
+      setBaleStatusMsg({ type: 'error', text: err.message || 'خطا در اتصال به پیام‌رسان بله.' });
+    } finally {
+      setTestingBale(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setSavedSuccess(false);
@@ -322,6 +360,9 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ co
         removeSourceLinks,
         cleanTagsAndLinks,
         contentFilter,
+        enableBale,
+        baleTargetChannel: baleTargetChannel.trim(),
+        baleBotToken: baleBotToken.trim(),
       };
       await updateConnectionSettings(connection.id, newSettings);
       setSavedSuccess(true);
@@ -734,6 +775,130 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({ co
                 className="w-full bg-transparent p-2 text-xs text-white placeholder-slate-500 focus:outline-none resize-none font-sans"
               />
             </div>
+          </div>
+
+          {/* Section 4.5: Bale Dual Forwarding (تنظیمات ارسال به پیام‌رسان بله) */}
+          <div className="p-4 rounded-xl neu-inset bg-emerald-500/5 border border-emerald-500/20 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={enableBale}
+                  onChange={(e) => {
+                    if (!isSubscribed && e.target.checked) {
+                      setBaleStatusMsg({ type: 'error', text: 'ارسال به بله مخصوص نسخه های اشتراکی (PRO / VIP) است.' });
+                    } else {
+                      setBaleStatusMsg(null);
+                    }
+                    setEnableBale(e.target.checked);
+                  }}
+                  className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-400 bg-slate-900 border-white/20 cursor-pointer"
+                />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-emerald-300">ارسال همزمان به پیام‌رسان بله (ایران) 🇮🇷</span>
+                  {isSubscribed ? (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-extrabold border border-emerald-500/30">
+                      پرو / VIP
+                    </span>
+                  ) : (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-extrabold border border-amber-500/30 flex items-center gap-1">
+                      <Lock className="w-3 h-3 text-amber-400" />
+                      <span>ویژه نسخه اشتراکی</span>
+                    </span>
+                  )}
+                </div>
+              </label>
+
+              {!isSubscribed && onOpenSubscriptions && (
+                <button
+                  type="button"
+                  onClick={onOpenSubscriptions}
+                  className="px-2.5 py-1 bg-gradient-to-r from-amber-500/20 to-yellow-500/20 hover:from-amber-500/30 hover:to-yellow-500/30 border border-amber-500/40 text-amber-300 text-xs font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                >
+                  <Crown className="w-3.5 h-3.5 text-amber-400" />
+                  <span>ارتقا به پرو</span>
+                </button>
+              )}
+            </div>
+
+            {!isSubscribed && enableBale && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-3 animate-fadeIn">
+                <div className="flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>این قابلیت نیازمند اشتراک <strong>PRO</strong> یا <strong>VIP</strong> می‌باشد.</span>
+                </div>
+                {onOpenSubscriptions && (
+                  <button
+                    type="button"
+                    onClick={onOpenSubscriptions}
+                    className="px-2.5 py-1 bg-amber-500 text-slate-950 font-black rounded-lg text-xs hover:bg-amber-400 transition-all cursor-pointer shrink-0"
+                  >
+                    خرید اشتراک
+                  </button>
+                )}
+              </div>
+            )}
+
+            {enableBale && (
+              <div className="space-y-3 pt-2 border-t border-white/10 animate-fadeIn">
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  💡 راهنما: ربات ساخته شده توسط <strong>BotFather@</strong> در بله را مدیر (Admin) کانال یا گروه مقصد کنید و توکن را وارد نمایید.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-200">
+                      کانال یا گروه مقصد در بله
+                    </label>
+                    <div className="neu-inset p-1 flex items-center">
+                      <input
+                        type="text"
+                        value={baleTargetChannel}
+                        onChange={(e) => setBaleTargetChannel(e.target.value)}
+                        placeholder="مثال: my_bale_channel@"
+                        className="w-full bg-transparent px-2.5 py-1.5 text-white placeholder-slate-500 focus:outline-none text-xs dir-ltr text-right"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-200">
+                      توکن ربات بله
+                    </label>
+                    <div className="neu-inset p-1 flex items-center">
+                      <input
+                        type="text"
+                        value={baleBotToken}
+                        onChange={(e) => setBaleBotToken(e.target.value)}
+                        placeholder="مثال: 123456789:ABCdef..."
+                        className="w-full bg-transparent px-2.5 py-1.5 text-white placeholder-slate-500 focus:outline-none text-xs dir-ltr text-left font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleTestBale}
+                    disabled={testingBale}
+                    className="px-3 py-1.5 bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/30 text-xs font-bold rounded-xl transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {testingBale ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5 text-emerald-400" />}
+                    <span>تست ارسال به کانال بله</span>
+                  </button>
+
+                  {baleStatusMsg && (
+                    <div className={`text-xs font-bold flex items-center gap-1.5 ${
+                      baleStatusMsg.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                    }`}>
+                      {baleStatusMsg.type === 'success' ? <CheckCircle2 className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                      <span>{baleStatusMsg.text}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section 5: Live Interactive Preview */}

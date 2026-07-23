@@ -4,6 +4,7 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import * as cheerio from "cheerio";
 import { GoogleGenAI } from "@google/genai";
+import nodemailer from "nodemailer";
 import { TelegramConnection, ConnectionLog, ForwardedMessageRecord, CreateConnectionDTO, AdvancedSettings, ContentFilter, User, LoginDTO, RegisterDTO } from "./src/types";
 
 const app = express();
@@ -21,6 +22,7 @@ const CONNECTIONS_FILE = path.join(DATA_DIR, "connections.json");
 const LOGS_FILE = path.join(DATA_DIR, "logs.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
+const PURCHASE_REQUESTS_FILE = path.join(DATA_DIR, "purchase_requests.json");
 
 // Helper storage functions
 function readJsonFile<T>(filePath: string, defaultValue: T): T {
@@ -44,6 +46,7 @@ function writeJsonFile<T>(filePath: string, data: T): void {
 }
 
 let users: User[] = readJsonFile(USERS_FILE, []);
+let purchaseRequests: any[] = readJsonFile(PURCHASE_REQUESTS_FILE, []);
 
 const ADMIN_EMAIL = "amir.r.an37@gmail.com";
 let adminUser = users.find(
@@ -901,6 +904,67 @@ async function sendTelegramMessage(botToken: string, targetChannel: string, payl
   }
 }
 
+async function sendBaleMessage(baleBotToken: string, baleTargetChannel: string, payload: any): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (!baleBotToken || !baleTargetChannel) {
+      return { ok: false, error: 'اطلاعات ربات یا کانال بله وارد نشده است' };
+    }
+
+    let channel = baleTargetChannel.trim();
+    if (!channel.startsWith('@') && !channel.startsWith('-') && isNaN(Number(channel))) {
+      channel = `@${channel}`;
+    }
+
+    const method = payload.method || 'sendMessage';
+    const baseUrl = `https://tapi.bale.ai/bot${baleBotToken.trim()}`;
+
+    if (method === "sendPhoto" && payload.photo) {
+      const photoUrl = getHighResMediaUrl(payload.photo);
+      const res = await fetch(`${baseUrl}/sendPhoto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: channel,
+          photo: photoUrl,
+          caption: stripHtmlToPlainText(payload.caption || ""),
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) return { ok: true };
+
+      if (payload.caption) {
+        const textRes = await fetch(`${baseUrl}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: channel,
+            text: stripHtmlToPlainText(payload.caption),
+          }),
+        });
+        const textData = await textRes.json();
+        if (textData.ok) return { ok: true };
+      }
+      return { ok: false, error: data.description || 'خطا در ارسال تصویر به بله' };
+    } else {
+      const rawText = payload.text || payload.caption || "پست جدید";
+      const cleanText = stripHtmlToPlainText(rawText);
+      const res = await fetch(`${baseUrl}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: channel,
+          text: cleanText,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) return { ok: true };
+      return { ok: false, error: data.description || 'خطا در ارسال پیام به بله' };
+    }
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'خطا در برقراری ارتباط با پیام‌رسان بله' };
+  }
+}
+
 // Telegram Public Channel Scraping Parser
 interface ScrapedPost {
   msgId: number;
@@ -1400,6 +1464,39 @@ async function processConnectionSync(conn: TelegramConnection, forceAll: boolean
       writeJsonFile(MESSAGES_FILE, messages);
       writeJsonFile(CONNECTIONS_FILE, connections);
     }
+
+    // Simultaneous forwarding to Bale platform if enabled
+    const baleToken = conn.baleBotToken || conn.settings?.baleBotToken;
+    const baleChannel = conn.baleTargetChannel || conn.settings?.baleTargetChannel;
+    if ((conn.enableBale || conn.settings?.enableBale) && baleToken && baleChannel) {
+      sendBaleMessage(baleToken, baleChannel, payload).then((baleRes) => {
+        if (baleRes.ok) {
+          addLog(
+            conn.id,
+            "success",
+            `پست #${post.msgId} همزمان با موفقیت به کانال بله (${baleChannel}) ارسال شد. 🇮🇷`,
+            post.type,
+            post.msgId
+          );
+        } else {
+          addLog(
+            conn.id,
+            "warning",
+            `ارسال همزمان به بله (${baleChannel}) با خطا مواجه شد: ${baleRes.error}`,
+            post.type,
+            post.msgId
+          );
+        }
+      }).catch((err) => {
+        addLog(
+          conn.id,
+          "error",
+          `ارسال به بله نا‌موفق بود: ${err.message}`,
+          post.type,
+          post.msgId
+        );
+      });
+    }
   }
 }
 
@@ -1438,10 +1535,19 @@ app.get("/api/connections", (req, res) => {
 
 app.post("/api/connections", async (req, res) => {
   try {
-    const { sourceChannel, targetChannel, botToken, settings }: CreateConnectionDTO = req.body;
+    const { sourceChannel, targetChannel, botToken, enableBale, baleTargetChannel, baleBotToken, settings }: CreateConnectionDTO = req.body;
 
     if (!sourceChannel || !targetChannel || !botToken) {
       return res.status(400).json({ error: "لطفاً تمام فیلدها را وارد کنید." });
+    }
+
+    const authUser = getAuthUser(req);
+    if (enableBale) {
+      if (authUser && authUser.role !== 'admin' && (authUser.plan === 'free' || authUser.subscriptionStatus !== 'active')) {
+        return res.status(403).json({
+          error: "قابلیت ارسال همزمان به پیام‌رسان بله (ایران) ویژه کاربران دارای اشتراک پرو (PRO) یا ویژه (VIP) می‌باشد. لطفاً برای فعال‌سازی این امکان، اشتراک خود را ارتقا دهید."
+        });
+      }
     }
 
     const cleanSource = cleanChannelName(sourceChannel);
@@ -1477,6 +1583,9 @@ app.post("/api/connections", async (req, res) => {
       lastError: scrapeRes.ok ? null : scrapeRes.error || null,
       botName: botName || "ربات ثبت شده",
       sourceTitle,
+      enableBale: !!enableBale,
+      baleTargetChannel: baleTargetChannel?.trim() || undefined,
+      baleBotToken: baleBotToken?.trim() || undefined,
       settings: settings || {
         rewriteMode: "none",
         aiPrompt: "متن را به صورت جذاب، روان و خوانا بازنویسی کن:",
@@ -1485,6 +1594,9 @@ app.post("/api/connections", async (req, res) => {
         removeSourceLinks: true,
         cleanTagsAndLinks: false,
         contentFilter: "all",
+        enableBale: !!enableBale,
+        baleTargetChannel: baleTargetChannel?.trim() || "",
+        baleBotToken: baleBotToken?.trim() || "",
       },
     };
 
@@ -1492,6 +1604,10 @@ app.post("/api/connections", async (req, res) => {
     writeJsonFile(CONNECTIONS_FILE, connections);
 
     addLog(newConnection.id, "info", `اتصال جدید بین ${newConnection.sourceChannel} و ${newConnection.targetChannel} ایجاد شد.`);
+
+    if (newConnection.enableBale && newConnection.baleTargetChannel) {
+      addLog(newConnection.id, "info", `ارسال همزمان به پیام‌رسان بله (${newConnection.baleTargetChannel}) نیز فعال گردید.`);
+    }
 
     setTimeout(() => {
       processConnectionSync(newConnection, true);
@@ -1507,7 +1623,32 @@ app.put("/api/connections/:id/settings", (req, res) => {
   const conn = connections.find((c) => c.id === req.params.id);
   if (!conn) return res.status(404).json({ error: "اتصال یافت نشد" });
 
-  const { rewriteMode, aiPrompt, geminiApiKey, replacements, signature, removeSourceLinks, cleanTagsAndLinks, contentFilter }: AdvancedSettings = req.body;
+  const {
+    rewriteMode,
+    aiPrompt,
+    geminiApiKey,
+    replacements,
+    signature,
+    removeSourceLinks,
+    cleanTagsAndLinks,
+    contentFilter,
+    enableBale,
+    baleTargetChannel,
+    baleBotToken
+  }: AdvancedSettings = req.body;
+
+  if (enableBale) {
+    const authUser = getAuthUser(req);
+    if (authUser && authUser.role !== 'admin' && (authUser.plan === 'free' || authUser.subscriptionStatus !== 'active')) {
+      return res.status(403).json({
+        error: "قابلیت ارسال همزمان به پیام‌رسان بله (ایران) ویژه کاربران دارای اشتراک پرو (PRO) یا ویژه (VIP) می‌باشد. لطفاً برای فعال‌سازی این امکان، اشتراک خود را ارتقا دهید."
+      });
+    }
+  }
+
+  conn.enableBale = !!enableBale;
+  if (baleTargetChannel !== undefined) conn.baleTargetChannel = baleTargetChannel.trim();
+  if (baleBotToken !== undefined) conn.baleBotToken = baleBotToken.trim();
 
   conn.settings = {
     rewriteMode: rewriteMode || "none",
@@ -1518,12 +1659,44 @@ app.put("/api/connections/:id/settings", (req, res) => {
     removeSourceLinks: !!removeSourceLinks,
     cleanTagsAndLinks: !!cleanTagsAndLinks,
     contentFilter: contentFilter || "all",
+    enableBale: !!enableBale,
+    baleTargetChannel: baleTargetChannel?.trim() || "",
+    baleBotToken: baleBotToken?.trim() || "",
   };
 
   writeJsonFile(CONNECTIONS_FILE, connections);
-  addLog(conn.id, "info", "تنظیمات پیشرفته و فیلترهای هوشمند با موفقیت به‌روزرسانی شد.");
+  addLog(conn.id, "info", "تنظیمات پیشرفته و فیلترها (به همراه تنظیمات بله) با موفقیت به‌روزرسانی شد.");
 
   res.json(conn);
+});
+
+app.post("/api/test-bale", async (req, res) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (authUser && authUser.role !== 'admin' && (authUser.plan === 'free' || authUser.subscriptionStatus !== 'active')) {
+      return res.status(403).json({
+        error: "تست ربات بله ویژه کاربران دارای اشتراک پرو (PRO) یا ویژه (VIP) می‌باشد. لطفاً برای استفاده، اشتراک خود را ارتقا دهید."
+      });
+    }
+
+    const { baleBotToken, baleTargetChannel } = req.body;
+    if (!baleBotToken || !baleTargetChannel) {
+      return res.status(400).json({ error: "لطفاً توکن ربات بله و شناسه کانال بله را وارد کنید." });
+    }
+
+    const testRes = await sendBaleMessage(baleBotToken, baleTargetChannel, {
+      method: "sendMessage",
+      text: "🤖 تست ارتباط اتوران با پیام‌رسان بله با موفقیت انجام شد! سیستم آماده ارسال اتوماتیک پیام‌ها به این کانال است. 🇮🇷",
+    });
+
+    if (testRes.ok) {
+      return res.json({ success: true, message: "ارتباط با بله موفقیت‌آمیز بود! یک پیام تست به کانال بله ارسال گردید." });
+    } else {
+      return res.status(400).json({ error: `تست بله با خطا مواجه شد: ${testRes.error}` });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || "خطا در تست اتصال به بله." });
+  }
 });
 
 app.post("/api/test-ai", async (req, res) => {
@@ -1673,10 +1846,128 @@ app.post("/api/connections/:id/sync", async (req, res) => {
   res.json(conn);
 });
 
+// In-memory OTP store for email verification
+const emailOtpStore: Record<string, { code: string; expiresAt: number }> = {};
+
+// Helper to send real emails via Nodemailer (Gmail / Outlook / Custom SMTP or Ethereal test inbox)
+async function sendVerificationEmail(toEmail: string, otpCode: string) {
+  const host = process.env.SMTP_HOST || "smtp.gmail.com";
+  const port = parseInt(process.env.SMTP_PORT || "587", 10);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.SMTP_FROM || `"Auto Run Verification" <${user || "no-reply@autorun.com"}>`;
+
+  let transporter: nodemailer.Transporter;
+
+  if (user && pass) {
+    // Real Production SMTP (Gmail App Password, Yahoo, Outlook, or Custom Server)
+    transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+    });
+  } else {
+    // Auto-generate test account if SMTP is not configured yet
+    const testAccount = await nodemailer.createTestAccount();
+    transporter = nodemailer.createTransport({
+      host: "smtp.ethereal.email",
+      port: 587,
+      secure: false,
+      auth: {
+        user: testAccount.user,
+        pass: testAccount.pass,
+      },
+    });
+  }
+
+  const htmlContent = `
+    <div style="font-family: Tahoma, Arial, sans-serif; direction: rtl; text-align: right; background-color: #0f172a; color: #f8fafc; padding: 30px; border-radius: 16px; max-width: 500px; margin: 0 auto; border: 1px solid #334155;">
+      <h2 style="color: #a855f7; font-size: 20px; margin-bottom: 10px;">کد تایید ثبت‌نام سامانه Auto run</h2>
+      <p style="font-size: 14px; color: #cbd5e1; line-height: 1.6;">
+        سلام،<br>
+        کد تایید ۶ رقمی برای تکمیل ثبت‌نام شما به شرح زیر می‌باشد:
+      </p>
+      <div style="text-align: center; margin: 25px 0;">
+        <span style="font-family: monospace; font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #facc15; background-color: #1e293b; padding: 12px 24px; border-radius: 12px; border: 1px solid #334155; display: inline-block;">
+          ${otpCode}
+        </span>
+      </div>
+      <p style="font-size: 12px; color: #94a3b8; text-align: center;">
+        این کد تا ۵ دقیقه آینده اعتبار دارد. اگر شما این درخواست را نداده‌اید، این پیام را نادیده بگیرید.
+      </p>
+      <hr style="border: 0; border-top: 1px solid #334155; margin-top: 25px;">
+      <p style="font-size: 11px; color: #64748b; text-align: center;">
+        🔒 تمامی اطلاعات شما به صورت رمزنگاری‌شده در سرور Auto run حفاظت می‌شود.
+      </p>
+    </div>
+  `;
+
+  const info = await transporter.sendMail({
+    from,
+    to: toEmail,
+    subject: `کد تایید ثبت‌نام Auto run: ${otpCode}`,
+    html: htmlContent,
+  });
+
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+  if (previewUrl) {
+    console.log(`[EMAIL DISPATCH] Sent to ${toEmail}. Preview URL: ${previewUrl}`);
+  } else {
+    console.log(`[EMAIL DISPATCH] Sent to ${toEmail}. Message ID: ${info.messageId}`);
+  }
+
+  return info;
+}
+
+// Send Email OTP Code
+app.post("/api/auth/send-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const cleanEmail = (email || "").trim().toLowerCase();
+
+    // Ensure real email format and allowed email provider domains
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const allowedDomains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'proton.me', 'protonmail.com', 'live.com', 'yandex.com', 'zoho.com'];
+    const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
+
+    if (!cleanEmail || !emailRegex.test(cleanEmail) || !emailDomain || !allowedDomains.includes(emailDomain)) {
+      return res.status(400).json({
+        error: "ثبت‌نام فقط با سرویس‌های ایمیل معتبر (Gmail، Yahoo، Outlook، Hotmail، iCloud یا Proton) امکان‌پذیر است.",
+      });
+    }
+
+    const existingEmail = users.find((u) => cleanEmail && u.email.toLowerCase() === cleanEmail);
+    if (existingEmail) {
+      return res.status(400).json({ error: "این آدرس ایمیل قبلاً ثبت شده است." });
+    }
+
+    // Generate 6-digit OTP code
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    emailOtpStore[cleanEmail] = {
+      code: otpCode,
+      expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
+    };
+
+    console.log(`[EMAIL OTP] Generated code for ${cleanEmail}: ${otpCode}`);
+
+    // Send email automatically
+    await sendVerificationEmail(cleanEmail, otpCode);
+
+    res.json({
+      success: true,
+      message: `کد تایید ۶ رقمی به آدرس ایمیل ${cleanEmail} ارسال شد.`,
+    });
+  } catch (err: any) {
+    console.error("Error sending verification email:", err);
+    res.status(500).json({ error: "خطا در ارسال ایمیل تایید. لطفاً آدرس ایمیل را بررسی کنید." });
+  }
+});
+
 // Authentication Endpoints
 app.post("/api/auth/register", (req, res) => {
   try {
-    const { username, fullName, email, phone, password }: RegisterDTO = req.body;
+    const { username, fullName, email, phone, password, otpCode }: RegisterDTO = req.body;
 
     if (!username || !username.trim() || !password || !password.trim()) {
       return res.status(400).json({ error: "نام کاربری و رمز عبور الزامی است." });
@@ -1686,11 +1977,26 @@ app.post("/api/auth/register", (req, res) => {
     const cleanEmail = (email || "").trim().toLowerCase();
     const cleanPassword = password.trim();
 
-    // Ensure real email format
+    // Ensure real email format and allowed email provider domains
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
-      return res.status(400).json({ error: "لطفاً یک آدرس ایمیل واقعی و معتبر وارد کنید." });
+    const allowedDomains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'proton.me', 'protonmail.com', 'live.com', 'yandex.com', 'zoho.com'];
+    const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
+
+    if (!cleanEmail || !emailRegex.test(cleanEmail) || !emailDomain || !allowedDomains.includes(emailDomain)) {
+      return res.status(400).json({
+        error: "ثبت‌نام فقط با سرویس‌های ایمیل معتبر (Gmail، Yahoo، Outlook، Hotmail، iCloud یا Proton) امکان‌پذیر است.",
+      });
     }
+
+    // OTP Code Verification (Bypassed temporarily upon user request)
+    // const otpRecord = emailOtpStore[cleanEmail];
+    // if (!otpCode || !otpRecord || otpRecord.code !== otpCode.trim()) {
+    //   return res.status(400).json({ error: "کد تایید ایمیل ۶ رقمی اشتباه است یا وارد نشده است." });
+    // }
+    // if (Date.now() > otpRecord.expiresAt) {
+    //   delete emailOtpStore[cleanEmail];
+    //   return res.status(400).json({ error: "کد تایید منقضی شده است. لطفاً کد جدید دریافت کنید." });
+    // }
 
     // Password validation: >= 8 characters, must contain both letters and numbers
     const hasLetter = /[a-zA-Z\u0600-\u06FF]/.test(cleanPassword);
@@ -1711,6 +2017,9 @@ app.post("/api/auth/register", (req, res) => {
     if (existingEmail) {
       return res.status(400).json({ error: "این آدرس ایمیل قبلاً ثبت شده است." });
     }
+
+    // Delete used OTP
+    delete emailOtpStore[cleanEmail];
 
     // Default subscription for new user: 30 days trial/active
     const defaultExpireDate = new Date();
@@ -2029,7 +2338,7 @@ app.get("/api/subscriptions/plans", (req, res) => {
       color: "from-slate-600 to-slate-800",
       features: [
         "امکان تعریف ۱ اتصال کانال فعال",
-        "انتقال پیام‌های متنی و عکس",
+        "انتقال پیام‌های متنی و عکس در تلگرام",
         "جایگزینی ساده کلمات و متون",
         "سرعت انتقال استاندار (بدون اولویت بالاتر)",
         "پشتیبانی عمومی انجمن"
@@ -2046,6 +2355,7 @@ app.get("/api/subscriptions/plans", (req, res) => {
       color: "from-blue-600 to-indigo-700",
       features: [
         "امکان تعریف تا ۵ اتصال کانال همزمان",
+        "پشتیبانی کامل از ارسال همزمان به پیام‌رسان بله (ایران) 🇮🇷",
         "پشتیبانی کامل از عکس، ویدیو، ویس صوتی و ویدیومسیج",
         "بازنویسی هوشمند متن با AI (Gemini / OpenAI)",
         "حذف و پاکسازی اتوماتیک لینک‌های منبع و تگ‌ها",
@@ -2063,6 +2373,7 @@ app.get("/api/subscriptions/plans", (req, res) => {
       color: "from-amber-500 to-yellow-600",
       features: [
         "اتصالات گسترده تا ۲۰ کانال همزمان",
+        "ارسال دوگانه همزمان به بله و پیام‌رسان‌های ایرانی 🇮🇷",
         "پشتیبانی تمام فرمت‌ها و آلبوم‌های چندرسانه‌ای",
         "دسترسی به تمام مدل‌های پیشرفته (Gemini 2.5, GPT-4, DeepSeek)",
         "واترمارک و بازنویسی اختصاصی پیشرفته با پرامپت دلخواه",
@@ -2136,32 +2447,227 @@ app.post("/api/subscriptions/purchase-request", (req, res) => {
 
     const { planId, billingCycleMonths, paymentMethod, transactionId, promoCode, amountPaid } = req.body;
 
-    // Simulate instant plan extension for testing or direct card payment confirmation
+    const requestedMonths = Number(billingCycleMonths) || 1;
+    const targetPlan = planId === "vip" ? "vip" : "pro";
+
+    // Create purchase request record
+    const newRequest = {
+      id: "req_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+      userId: user.id,
+      username: user.username,
+      fullName: user.fullName || user.username,
+      userEmail: user.email,
+      userPhone: user.phone,
+      planId: targetPlan,
+      planTitle: targetPlan === "vip" ? "اشتراک ویژه (VIP)" : "اشتراک پرو (PRO)",
+      billingCycleMonths: requestedMonths,
+      paymentMethod: paymentMethod || "card_to_card",
+      transactionId: transactionId ? String(transactionId).trim() : "",
+      amountPaid: Number(amountPaid) || 0,
+      status: "approved",
+      createdAt: new Date().toISOString(),
+      processedAt: new Date().toISOString(),
+    };
+
+    // Activate subscription
     const now = new Date();
     let currentExpire = user.subscriptionExpireAt ? new Date(user.subscriptionExpireAt) : new Date();
     if (currentExpire.getTime() < now.getTime()) {
       currentExpire = now;
     }
 
-    const daysToAdd = (billingCycleMonths || 1) * 30;
+    const daysToAdd = requestedMonths * 30;
     currentExpire.setDate(currentExpire.getDate() + daysToAdd);
 
     user.subscriptionStatus = "active";
-    user.plan = planId === "vip" ? "vip" : "pro";
+    user.plan = targetPlan;
     user.subscriptionExpireAt = currentExpire.toISOString();
-    user.maxConnections = planId === "vip" ? 20 : 10;
+    user.maxConnections = targetPlan === "vip" ? 20 : 10;
+    user.updatedAt = new Date().toISOString();
 
     writeJsonFile(USERS_FILE, users);
 
+    purchaseRequests.unshift(newRequest);
+    writeJsonFile(PURCHASE_REQUESTS_FILE, purchaseRequests);
+
     res.json({
       success: true,
-      message: `درخواست ارتقای اشتراک شما ثبت شد! اشتراک ${planId.toUpperCase()} شما فعال گردید.`,
-      user
+      message: `درخواست ارتقای اشتراک شما ثبت گردید! اشتراک ${newRequest.planTitle} شما فعال گردید.`,
+      user,
+      purchaseRequest: newRequest
     });
   } catch (err: any) {
     res.status(500).json({ error: "خطا در ثبت درخواست ارتقا." });
   }
 });
+
+// Admin API: List purchase requests
+app.get("/api/admin/purchase-requests", (req, res) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser || authUser.role !== "admin") {
+      return res.status(403).json({ error: "دسترسی غیرمجاز." });
+    }
+    res.json(purchaseRequests);
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در دریافت درخواست‌های خرید." });
+  }
+});
+
+// Admin API: Approve purchase request
+app.post("/api/admin/purchase-requests/:id/approve", (req, res) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser || authUser.role !== "admin") {
+      return res.status(403).json({ error: "دسترسی غیرمجاز." });
+    }
+
+    const requestId = req.params.id;
+    const reqItem = purchaseRequests.find((r) => r.id === requestId);
+    if (!reqItem) {
+      return res.status(404).json({ error: "درخواست یافت نشد." });
+    }
+
+    reqItem.status = "approved";
+    reqItem.processedAt = new Date().toISOString();
+
+    const targetUser = users.find((u) => u.id === reqItem.userId || u.username === reqItem.username);
+    if (targetUser) {
+      const now = new Date();
+      let currentExpire = targetUser.subscriptionExpireAt ? new Date(targetUser.subscriptionExpireAt) : new Date();
+      if (currentExpire.getTime() < now.getTime()) {
+        currentExpire = now;
+      }
+      const daysToAdd = (reqItem.billingCycleMonths || 1) * 30;
+      currentExpire.setDate(currentExpire.getDate() + daysToAdd);
+
+      targetUser.subscriptionStatus = "active";
+      targetUser.plan = reqItem.planId;
+      targetUser.subscriptionExpireAt = currentExpire.toISOString();
+      targetUser.maxConnections = reqItem.planId === "vip" ? 20 : 10;
+      writeJsonFile(USERS_FILE, users);
+    }
+
+    writeJsonFile(PURCHASE_REQUESTS_FILE, purchaseRequests);
+    res.json({ success: true, message: "درخواست خرید تایید و اشتراک کاربر با موفقیت فعال گردید.", request: reqItem });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در تایید درخواست." });
+  }
+});
+
+// Admin API: Reject purchase request
+app.post("/api/admin/purchase-requests/:id/reject", (req, res) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser || authUser.role !== "admin") {
+      return res.status(403).json({ error: "دسترسی غیرمجاز." });
+    }
+
+    const requestId = req.params.id;
+    const { note } = req.body;
+    const reqItem = purchaseRequests.find((r) => r.id === requestId);
+    if (!reqItem) {
+      return res.status(404).json({ error: "درخواست یافت نشد." });
+    }
+
+    reqItem.status = "rejected";
+    reqItem.processedAt = new Date().toISOString();
+    reqItem.adminNote = note || "رد توسط مدیر سیستم";
+
+    writeJsonFile(PURCHASE_REQUESTS_FILE, purchaseRequests);
+    res.json({ success: true, message: "درخواست خرید رد گردید.", request: reqItem });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در رد درخواست." });
+  }
+});
+
+// Admin API: Export Full Backup
+app.get("/api/admin/backup/export", (req, res) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser || authUser.role !== "admin") {
+      return res.status(403).json({ error: "دسترسی غیرمجاز." });
+    }
+
+    const backupData = {
+      version: "1.0.0",
+      exportedAt: new Date().toISOString(),
+      exportedBy: authUser.username,
+      users: readJsonFile(USERS_FILE, users),
+      connections: readJsonFile(CONNECTIONS_FILE, connections),
+      purchaseRequests: readJsonFile(PURCHASE_REQUESTS_FILE, purchaseRequests),
+      logs: readJsonFile(LOGS_FILE, logs),
+      messages: readJsonFile(MESSAGES_FILE, messages),
+    };
+
+    res.json(backupData);
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در دریافت بکاپ سیستم." });
+  }
+});
+
+// Admin API: Import Full Backup
+app.post("/api/admin/backup/import", (req, res) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser || authUser.role !== "admin") {
+      return res.status(403).json({ error: "دسترسی غیرمجاز." });
+    }
+
+    const { backupData } = req.body;
+    if (!backupData || typeof backupData !== "object") {
+      return res.status(400).json({ error: "فرمت داده‌های بکاپ نامعتبر است." });
+    }
+
+    const importedUsers = Array.isArray(backupData.users) ? backupData.users : [];
+    const importedConnections = Array.isArray(backupData.connections) ? backupData.connections : [];
+    const importedRequests = Array.isArray(backupData.purchaseRequests) ? backupData.purchaseRequests : [];
+    const importedLogs = Array.isArray(backupData.logs) ? backupData.logs : [];
+    const importedMessages = Array.isArray(backupData.messages) ? backupData.messages : [];
+
+    if (importedUsers.length === 0) {
+      return res.status(400).json({ error: "فایل بکاپ ارسالی شامل هیچ کاربری نیست!" });
+    }
+
+    // Preserve current admin account
+    let hasMainAdmin = importedUsers.some((u: any) => u.email === "amir.r.an37@gmail.com" || u.username === "amir.r.an37@gmail.com");
+    if (!hasMainAdmin && adminUser) {
+      importedUsers.unshift(adminUser);
+    }
+
+    users = importedUsers;
+    connections = importedConnections;
+    purchaseRequests = importedRequests;
+    logs = importedLogs;
+    messages = importedMessages;
+
+    writeJsonFile(USERS_FILE, users);
+    writeJsonFile(CONNECTIONS_FILE, connections);
+    writeJsonFile(PURCHASE_REQUESTS_FILE, purchaseRequests);
+    writeJsonFile(LOGS_FILE, logs);
+    writeJsonFile(MESSAGES_FILE, messages);
+
+    // Re-trigger active connection synchronization
+    connections.forEach((conn) => {
+      if (conn.status === "active") {
+        processConnectionSync(conn, true);
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `بکاپ کامل با موفقیت روی سرور جدید بارگذاری شد! تعداد ${users.length} کاربر و ${connections.length} اتصال انتقال یافتند.`,
+      stats: {
+        usersCount: users.length,
+        connectionsCount: connections.length,
+        requestsCount: purchaseRequests.length,
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در بازیابی بکاپ: " + (err.message || "") });
+  }
+});
+
 
 
 async function startServer() {

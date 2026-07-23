@@ -24,6 +24,9 @@ export interface AdvancedSettings {
   removeSourceLinks?: boolean;
   cleanTagsAndLinks?: boolean;
   contentFilter: ContentFilter;
+  enableBale?: boolean;
+  baleTargetChannel?: string;
+  baleBotToken?: string;
 }
 
 export interface TelegramConnection {
@@ -39,6 +42,9 @@ export interface TelegramConnection {
   lastError: string | null;
   botName?: string;
   sourceTitle?: string;
+  enableBale?: boolean;
+  baleTargetChannel?: string;
+  baleBotToken?: string;
   settings?: AdvancedSettings;
 }
 
@@ -67,6 +73,9 @@ export interface CreateConnectionDTO {
   sourceChannel: string;
   targetChannel: string;
   botToken: string;
+  enableBale?: boolean;
+  baleTargetChannel?: string;
+  baleBotToken?: string;
   settings?: AdvancedSettings;
 }
 
@@ -91,6 +100,7 @@ export interface User {
   maxConnections?: number;
   connectionsCount?: number;
   createdAt: string;
+  updatedAt?: string;
   token?: string;
 }
 
@@ -105,6 +115,7 @@ export interface RegisterDTO {
   email: string;
   phone?: string;
   password: string;
+  otpCode?: string;
 }
 
 export interface SubscriptionPlan {
@@ -131,4 +142,24 @@ export interface PurchaseRequestDTO {
   promoCode?: string;
   amountPaid?: number;
 }
+
+export interface PurchaseRequestRecord {
+  id: string;
+  userId: string;
+  username: string;
+  fullName?: string;
+  userEmail?: string;
+  userPhone?: string;
+  planId: 'pro' | 'vip';
+  planTitle: string;
+  billingCycleMonths: number;
+  paymentMethod: 'card_to_card' | 'online_gateway' | 'telegram_support';
+  transactionId?: string;
+  amountPaid: number;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  processedAt?: string;
+  adminNote?: string;
+}
+
 

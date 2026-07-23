@@ -96,6 +96,8 @@ export const ConnectionCard: React.FC<ConnectionCardProps> = ({
 
   const rulesCount = connection.settings?.replacements?.length || 0;
   const hasCustomSettings = rulesCount > 0 || !!connection.settings?.appendFooter || !!connection.settings?.prependHeader || !!connection.settings?.removeLinks || !!connection.settings?.removeUsernames;
+  const isBaleActive = connection.enableBale || connection.settings?.enableBale;
+  const baleTarget = connection.baleTargetChannel || connection.settings?.baleTargetChannel;
 
   return (
     <div className="neu-flat p-6 border border-white/5 transition-all hover:border-yellow-400/20">
@@ -120,6 +122,13 @@ export const ConnectionCard: React.FC<ConnectionCardProps> = ({
 
         {/* Status Badge & Settings Indicator */}
         <div className="flex items-center gap-2 flex-wrap">
+          {isBaleActive && (
+            <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 shadow-sm" title={`ارسال همزمان به کانال بله (${baleTarget})`}>
+              <span className="text-emerald-400 font-extrabold">🇮🇷 بله:</span>
+              <span className="dir-ltr">{baleTarget || 'فعال'}</span>
+            </span>
+          )}
+
           {hasCustomSettings && (
             <button
               onClick={() => onOpenSettings(connection)}

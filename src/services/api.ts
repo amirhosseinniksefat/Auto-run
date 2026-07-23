@@ -1,9 +1,11 @@
-import { TelegramConnection, ConnectionLog, ForwardedMessageRecord, CreateConnectionDTO, ConnectionStats, AdvancedSettings, User, LoginDTO, RegisterDTO } from '../types';
+import { TelegramConnection, ConnectionLog, ForwardedMessageRecord, CreateConnectionDTO, ConnectionStats, AdvancedSettings, User, LoginDTO, RegisterDTO, SubscriptionPlan, PurchaseRequestDTO, PurchaseRequestRecord } from '../types';
 
 async function safeJsonFetch(url: string, options?: RequestInit, maxRetries = 5): Promise<any> {
   let lastErr: any = null;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('autorun_auth_token') : null;
   const mergedHeaders: Record<string, string> = {
     'Accept': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     ...(options?.headers as Record<string, string> || {}),
   };
 
@@ -135,6 +137,14 @@ export async function registerUser(dto: RegisterDTO): Promise<{ user: User; toke
   });
 }
 
+export async function sendEmailOtp(email: string): Promise<{ success: boolean; message: string }> {
+  return safeJsonFetch('/api/auth/send-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+}
+
 export async function fetchCurrentUser(token: string): Promise<User> {
   return safeJsonFetch('/api/auth/me', {
     headers: {
@@ -232,6 +242,64 @@ export async function submitPurchaseRequest(
     body: JSON.stringify(dto),
   });
 }
+
+export async function testBaleBot(baleBotToken: string, baleTargetChannel: string): Promise<{ success: boolean; message: string }> {
+  return safeJsonFetch('/api/test-bale', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ baleBotToken, baleTargetChannel }),
+  });
+}
+
+export async function fetchAdminPurchaseRequests(token: string): Promise<PurchaseRequestRecord[]> {
+  return safeJsonFetch('/api/admin/purchase-requests', {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+}
+
+export async function approveAdminPurchaseRequest(token: string, requestId: string): Promise<{ success: boolean; message: string }> {
+  return safeJsonFetch(`/api/admin/purchase-requests/${requestId}/approve`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+}
+
+export async function rejectAdminPurchaseRequest(token: string, requestId: string, note?: string): Promise<{ success: boolean; message: string }> {
+  return safeJsonFetch(`/api/admin/purchase-requests/${requestId}/reject`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ note }),
+  });
+}
+
+export async function exportAdminBackup(token: string): Promise<any> {
+  return safeJsonFetch('/api/admin/backup/export', {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+}
+
+export async function importAdminBackup(token: string, backupData: any): Promise<{ success: boolean; message: string; stats?: any }> {
+  return safeJsonFetch('/api/admin/backup/import', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ backupData }),
+  });
+}
+
 
 
 

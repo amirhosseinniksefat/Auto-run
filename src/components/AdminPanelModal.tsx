@@ -20,10 +20,27 @@ import {
   Lock,
   Phone,
   Mail,
-  UserCheck
+  UserCheck,
+  CreditCard,
+  Download,
+  Upload,
+  Database,
+  Receipt,
+  FileJson,
+  Check
 } from 'lucide-react';
-import { User } from '../types';
-import { fetchAdminUsers, updateAdminUserSubscription, createAdminUser, deleteAdminUser } from '../services/api';
+import { User, PurchaseRequestRecord } from '../types';
+import { 
+  fetchAdminUsers, 
+  updateAdminUserSubscription, 
+  createAdminUser, 
+  deleteAdminUser,
+  fetchAdminPurchaseRequests,
+  approveAdminPurchaseRequest,
+  rejectAdminPurchaseRequest,
+  exportAdminBackup,
+  importAdminBackup
+} from '../services/api';
 
 interface AdminPanelModalProps {
   isOpen: boolean;
@@ -38,12 +55,25 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   currentUser,
   authToken
 }) => {
+  const [adminTab, setAdminTab] = useState<'users' | 'requests' | 'backup'>('users');
+
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Search and Filters
+  // Purchase Requests State
+  const [purchaseRequests, setPurchaseRequests] = useState<PurchaseRequestRecord[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState<boolean>(false);
+  const [processingReqId, setProcessingReqId] = useState<string | null>(null);
+
+  // Backup & Restore State
+  const [exportingBackup, setExportingBackup] = useState<boolean>(false);
+  const [importingBackup, setImportingBackup] = useState<boolean>(false);
+  const [importedJsonText, setImportedJsonText] = useState<string>('');
+  const [importFileName, setImportFileName] = useState<string>('');
+
+  // Search and Filters for Users
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive' | 'expired'>('all');
   const [planFilter, setPlanFilter] = useState<string>('all');
@@ -53,7 +83,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [editStatus, setEditStatus] = useState<'active' | 'inactive' | 'expired'>('active');
   const [editPlan, setEditPlan] = useState<'free' | 'pro' | 'vip'>('pro');
   const [editRole, setEditRole] = useState<'user' | 'admin'>('user');
-  const [selectedDays, setSelectedDays] = useState<number | null>(30); // 30 days default
+  const [selectedDays, setSelectedDays] = useState<number | null>(30);
   const [customDaysInput, setCustomDaysInput] = useState<string>('');
   const [submittingEdit, setSubmittingEdit] = useState<boolean>(false);
 
@@ -86,9 +116,23 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     }
   };
 
+  const loadPurchaseRequests = async () => {
+    if (!authToken) return;
+    setLoadingRequests(true);
+    try {
+      const data = await fetchAdminPurchaseRequests(authToken);
+      setPurchaseRequests(data || []);
+    } catch (err: any) {
+      console.error('Error loading purchase requests:', err);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
   useEffect(() => {
     if (isOpen && authToken) {
       loadUsers();
+      loadPurchaseRequests();
     }
   }, [isOpen, authToken]);
 
@@ -99,6 +143,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const activeSubs = users.filter((u) => u.subscriptionStatus === 'active' || u.role === 'admin').length;
   const inactiveSubs = users.filter((u) => u.subscriptionStatus === 'inactive' || u.subscriptionStatus === 'expired').length;
   const adminCount = users.filter((u) => u.role === 'admin').length;
+  const pendingRequestsCount = purchaseRequests.filter((r) => r.status === 'pending').length;
 
   // Filtered users list
   const filteredUsers = users.filter((u) => {
@@ -119,7 +164,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   // Calculate remaining days for user
   const getRemainingDaysText = (user: User) => {
     if (user.role === 'admin' || !user.subscriptionExpireAt) {
-      return { text: 'نامحدود (دائمی)', color: 'text-emerald-400 font-bold', badgeBg: 'bg-emerald-500/10 border-emerald-500/30' };
+      return { text: 'نامحدود (دائمی)', color: 'text-amber-300 font-bold', badgeBg: 'bg-amber-500/10 border-amber-500/30' };
     }
     const expireTime = new Date(user.subscriptionExpireAt).getTime();
     const now = Date.now();
@@ -148,57 +193,58 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       setSuccessMsg(null);
       await updateAdminUserSubscription(authToken, user.id, {
         subscriptionStatus: newSt,
+        role: user.role,
+        plan: user.plan
       });
-      setSuccessMsg(`وضعیت کاربر ${user.username} به ${newSt === 'active' ? 'فعال' : 'غیرفعال'} تغییر یافت.`);
+      setSuccessMsg(`وضعیت کاربر ${user.username} با موفقیت به ${newSt === 'active' ? 'فعال' : 'غیرفعال'} تغییر یافت.`);
       loadUsers();
-      setTimeout(() => setSuccessMsg(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'خطا در تغییر وضعیت کاربر');
+      setError(err.message || 'خطا در ویرایش وضعیت کاربر');
     }
   };
 
-  // Submit Edit Subscription
-  const handleSaveSubscription = async () => {
+  // Submit User Edit
+  const handleSaveEdit = async () => {
     if (!editingUser) return;
     setSubmittingEdit(true);
-    try {
-      let daysToApply: number | null = selectedDays;
-      if (selectedDays === -2) { // Custom
-        const parsed = parseInt(customDaysInput.trim(), 10);
-        if (isNaN(parsed) || parsed <= 0) {
-          alert('لطفاً تعداد روز معتبر وارد کنید.');
-          setSubmittingEdit(false);
-          return;
-        }
-        daysToApply = parsed;
-      }
+    setSuccessMsg(null);
+    setError(null);
 
+    let days = selectedDays;
+    if (selectedDays === null && customDaysInput) {
+      days = parseInt(customDaysInput, 10) || 30;
+    }
+
+    try {
       await updateAdminUserSubscription(authToken, editingUser.id, {
         subscriptionStatus: editStatus,
-        plan: editPlan,
         role: editRole,
-        durationDays: daysToApply,
+        plan: editPlan,
+        durationDays: days !== null ? days : undefined
       });
 
-      setSuccessMsg(`اشتراک کاربر ${editingUser.username} با موفقیت بروزرسانی شد.`);
+      setSuccessMsg(`اشتراک و دسترسی کاربر ${editingUser.username} با موفقیت بروزرسانی شد.`);
       setEditingUser(null);
       loadUsers();
-      setTimeout(() => setSuccessMsg(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'خطا در ذخیره تغییرات');
+      setError(err.message || 'خطا در ذخیره تغییرات کاربر');
     } finally {
       setSubmittingEdit(false);
     }
   };
 
-  // Submit Create User
+  // Create User
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername || !newPassword) {
-      alert('نام کاربری و رمز عبور الزامی است.');
+      setError('نام کاربری و رمز عبور الزامی است.');
       return;
     }
+
     setSubmittingAdd(true);
+    setError(null);
+    setSuccessMsg(null);
+
     try {
       await createAdminUser(authToken, {
         username: newUsername,
@@ -208,10 +254,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
         password: newPassword,
         role: newRole,
         plan: newPlan,
-        durationDays: newDays,
+        extendDays: newDays
       });
 
-      setSuccessMsg(`کاربر جدید (${newUsername}) با موفقیت ایجاد شد.`);
+      setSuccessMsg(`کاربر جدید (${newUsername}) با موفقیت ایجاد گردید.`);
       setIsAddUserOpen(false);
       setNewUsername('');
       setNewFullName('');
@@ -219,463 +265,775 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       setNewPhone('');
       setNewPassword('');
       loadUsers();
-      setTimeout(() => setSuccessMsg(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'خطا در ایجاد کاربر');
+      setError(err.message || 'خطا در ایجاد کاربر جدید');
     } finally {
       setSubmittingAdd(false);
     }
   };
 
-  // Confirm Delete User
+  // Delete User
   const handleDeleteUser = async (userId: string) => {
     try {
+      setSuccessMsg(null);
       await deleteAdminUser(authToken, userId);
-      setSuccessMsg('کاربر با موفقیت حذف شد.');
+      setSuccessMsg('کاربر با موفقیت از سیستم حذف شد.');
       setDeletingUserId(null);
       loadUsers();
-      setTimeout(() => setSuccessMsg(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'خطا در حذف کاربر');
+      setError(err.message || 'خطا در حذف کاربر');
+    }
+  };
+
+  // Purchase Request Handlers
+  const handleApproveRequest = async (requestId: string) => {
+    if (!authToken) return;
+    setProcessingReqId(requestId);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await approveAdminPurchaseRequest(authToken, requestId);
+      setSuccessMsg(res.message || 'درخواست خرید تایید و اشتراک کاربر فعال گردید.');
+      await loadPurchaseRequests();
+      await loadUsers();
+    } catch (err: any) {
+      setError(err.message || 'خطا در تایید درخواست');
+    } finally {
+      setProcessingReqId(null);
+    }
+  };
+
+  const handleRejectRequest = async (requestId: string) => {
+    if (!authToken) return;
+    setProcessingReqId(requestId);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await rejectAdminPurchaseRequest(authToken, requestId, 'رد توسط مدیر سیستم');
+      setSuccessMsg(res.message || 'درخواست خرید رد شد.');
+      await loadPurchaseRequests();
+    } catch (err: any) {
+      setError(err.message || 'خطا در رد درخواست');
+    } finally {
+      setProcessingReqId(null);
+    }
+  };
+
+  // Backup Handlers
+  const handleExportBackup = async () => {
+    if (!authToken) return;
+    setExportingBackup(true);
+    setError(null);
+    try {
+      const backupData = await exportAdminBackup(authToken);
+      const jsonStr = JSON.stringify(backupData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `autorun_full_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSuccessMsg('فایل بکاپ کامل سیستم با موفقیت ایجاد و دانلود شد.');
+    } catch (err: any) {
+      setError(err.message || 'خطا در دانلود بکاپ سیستم');
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setImportedJsonText(content || '');
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImportBackup = async () => {
+    if (!authToken || !importedJsonText.trim()) return;
+    if (!window.confirm('آیا اطمینان دارید؟ با بازیابی بکاپ، تمامی اطلاعات فعلی با داده‌های فایل جدید جایگزین شده و اتصالات به سرور جدید منتقل می‌شوند.')) return;
+
+    setImportingBackup(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const parsed = JSON.parse(importedJsonText);
+      const res = await importAdminBackup(authToken, parsed);
+      setSuccessMsg(res.message || 'بکاپ با موفقیت بازیابی شد.');
+      await loadUsers();
+      await loadPurchaseRequests();
+      setImportedJsonText('');
+      setImportFileName('');
+    } catch (err: any) {
+      setError(err.message || 'فرمت فایل بکاپ نامعتبر است یا در فرایند بازیابی خطایی رخ داد.');
+    } finally {
+      setImportingBackup(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-fade-in dir-rtl overflow-y-auto">
-      <div className="relative w-full max-w-5xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden my-auto flex flex-col max-h-[92vh] admin-modal-card">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-hidden">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl text-slate-100 font-sans dir-rtl overflow-hidden animate-fade-in admin-modal-container">
         
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-800 bg-slate-900/90 sticky top-0 z-20 backdrop-blur">
+        {/* Top Header */}
+        <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950/80 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-400 flex items-center justify-center shadow-lg shadow-amber-500/20 text-slate-950 font-bold">
               <Crown className="w-5 h-5" />
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
-                پنل مدیریت کاربران و اشتراک‌ها
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 font-normal">
-                  مخصوص ادمین
+                پنل مدیریت ارشد سیستم
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 font-extrabold">
+                  دسترسی طلایی
                 </span>
               </h2>
-              <p className="text-xs text-slate-400">رصد کامل حساب‌های کاربری، کنترل دسترسی و تمدید اشتراک‌ها</p>
+              <p className="text-xs text-slate-400">کنترل کامل کاربران، فاکتورهای واریزی و پشتیبان‌گیری کل سرور</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={loadUsers}
-              disabled={loading}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all text-xs flex items-center gap-1.5 border border-slate-700"
-              title="بروزرسانی لیست"
+              onClick={() => { loadUsers(); loadPurchaseRequests(); }}
+              disabled={loading || loadingRequests}
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all text-xs flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+              title="بروزرسانی اطلاعات"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-4 h-4 ${loading || loadingRequests ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">بروزرسانی</span>
             </button>
             <button
               onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all border border-slate-700"
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all border border-slate-700 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
+        {/* Admin Navigation Tabs */}
+        <div className="flex items-center gap-2 px-4 sm:px-6 pt-3 bg-slate-950/40 border-b border-slate-800/80 overflow-x-auto">
+          <button
+            onClick={() => setAdminTab('users')}
+            className={`px-4 py-2.5 rounded-t-xl font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+              adminTab === 'users'
+                ? 'bg-slate-800 text-amber-300 border-t border-x border-amber-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Users className="w-4 h-4 text-amber-400" />
+            <span>مدیریت کاربران</span>
+            <span className="text-[10px] px-2 py-0.2 rounded-full bg-slate-700 text-white font-mono">
+              {totalUsers}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setAdminTab('requests')}
+            className={`px-4 py-2.5 rounded-t-xl font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+              adminTab === 'requests'
+                ? 'bg-slate-800 text-amber-300 border-t border-x border-amber-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Receipt className="w-4 h-4 text-emerald-400" />
+            <span>درخواست‌های خرید و واریز</span>
+            {pendingRequestsCount > 0 ? (
+              <span className="text-[10px] px-2 py-0.2 rounded-full bg-amber-500 text-slate-950 font-black animate-pulse">
+                {pendingRequestsCount} جدید
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.2 rounded-full bg-slate-700 text-slate-300 font-mono">
+                {purchaseRequests.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setAdminTab('backup')}
+            className={`px-4 py-2.5 rounded-t-xl font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+              adminTab === 'backup'
+                ? 'bg-slate-800 text-amber-300 border-t border-x border-amber-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Database className="w-4 h-4 text-blue-400" />
+            <span>بکاپگیری و انتقال کامل سرور</span>
+          </button>
+        </div>
+
         {/* Notifications */}
         {error && (
-          <div className="mx-4 mt-3 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center justify-between">
+          <div className="mx-4 sm:mx-6 mt-3 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center justify-between">
             <span>{error}</span>
-            <button onClick={() => setError(null)} className="text-red-400 hover:text-white">✕</button>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-white cursor-pointer">✕</button>
           </div>
         )}
         {successMsg && (
-          <div className="mx-4 mt-3 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between animate-fade-in">
+          <div className="mx-4 sm:mx-6 mt-3 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between animate-fade-in">
             <span className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
               {successMsg}
             </span>
-            <button onClick={() => setSuccessMsg(null)} className="text-emerald-400 hover:text-white">✕</button>
+            <button onClick={() => setSuccessMsg(null)} className="text-emerald-400 hover:text-white cursor-pointer">✕</button>
           </div>
         )}
 
         {/* Body Content */}
         <div className="p-4 sm:p-6 overflow-y-auto space-y-5 custom-scrollbar flex-1">
 
-          {/* Stats Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">
-                <Users className="w-5 h-5" />
+          {/* TAB 1: USER MANAGEMENT */}
+          {adminTab === 'users' && (
+            <div className="space-y-5">
+              
+              {/* Stats Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">
+                    <Users className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">کل کاربران ثبت‌نامی</span>
+                    <span className="text-lg font-black text-white">{totalUsers}</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">
+                    <CheckCircle2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">اشتراک‌های فعال</span>
+                    <span className="text-lg font-black text-emerald-400">{activeSubs}</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+                    <XCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">غیرفعال / منقضی</span>
+                    <span className="text-lg font-black text-amber-400">{inactiveSubs}</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold">
+                    <Shield className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">مدیران ارشد سیستم</span>
+                    <span className="text-lg font-black text-purple-300">{adminCount}</span>
+                  </div>
+                </div>
               </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">کل کاربران</span>
-                <span className="text-lg font-black text-white">{totalUsers}</span>
+
+              {/* Search, Filters, Add User Button */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-800/40 p-3 rounded-2xl border border-slate-700/50">
+                <div className="flex-1 relative">
+                  <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="جستجو در نام، نام کاربری، ایمیل یا شماره..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pr-9 pl-3 py-2 bg-slate-900/80 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 overflow-x-auto">
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value as any)}
+                    className="bg-slate-900 border border-slate-700 text-xs text-slate-200 py-2 px-3 rounded-xl focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="all">همه وضعیت‌ها</option>
+                    <option value="active">اشتراک فعال</option>
+                    <option value="inactive">اشتراک غیرفعال</option>
+                    <option value="expired">منقضی شده</option>
+                  </select>
+
+                  <select
+                    value={planFilter}
+                    onChange={(e) => setPlanFilter(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 text-xs text-slate-200 py-2 px-3 rounded-xl focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="all">همه پلن‌ها</option>
+                    <option value="free">رایگان (Free)</option>
+                    <option value="pro">حرفه‌ای (PRO)</option>
+                    <option value="vip">ویژه (VIP)</option>
+                  </select>
+
+                  <button
+                    onClick={() => setIsAddUserOpen(true)}
+                    className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black text-xs rounded-xl transition-all flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>ایجاد کاربر جدید</span>
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">
-                <CheckCircle2 className="w-5 h-5" />
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">اشتراک‌های فعال</span>
-                <span className="text-lg font-black text-emerald-400">{activeSubs}</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
-                <XCircle className="w-5 h-5" />
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">غیرفعال / منقضی</span>
-                <span className="text-lg font-black text-amber-400">{inactiveSubs}</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-800/60 border border-slate-700/60 p-3.5 rounded-2xl flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold">
-                <Shield className="w-5 h-5" />
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-400 block font-medium">مدیران سیستم</span>
-                <span className="text-lg font-black text-purple-300">{adminCount}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Search, Filters, Add User Button */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-800/40 p-3 rounded-2xl border border-slate-700/50">
-            <div className="flex-1 relative">
-              <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="جستجو در نام، نام کاربری، ایمیل یا شماره..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pr-9 pl-3 py-2 bg-slate-900/80 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors"
-              />
-            </div>
-
-            <div className="flex items-center gap-2 overflow-x-auto">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                className="bg-slate-900 border border-slate-700 text-xs text-slate-200 py-2 px-3 rounded-xl focus:outline-none focus:border-amber-500"
-              >
-                <option value="all">همه وضعیت‌ها</option>
-                <option value="active">اشتراک فعال</option>
-                <option value="inactive">اشتراک غیرفعال</option>
-                <option value="expired">منقضی شده</option>
-              </select>
-
-              <select
-                value={planFilter}
-                onChange={(e) => setPlanFilter(e.target.value)}
-                className="bg-slate-900 border border-slate-700 text-xs text-slate-200 py-2 px-3 rounded-xl focus:outline-none focus:border-amber-500"
-              >
-                <option value="all">همه پلن‌ها</option>
-                <option value="pro">Pro</option>
-                <option value="vip">VIP</option>
-                <option value="free">رایگان</option>
-              </select>
-
-              <button
-                onClick={() => setIsAddUserOpen(true)}
-                className="bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-slate-950 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-lg shadow-amber-500/20 whitespace-nowrap transition-all"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>افزودن کاربر</span>
-              </button>
-            </div>
-          </div>
-
-          {/* User Table / List */}
-          {loading ? (
-            <div className="py-12 text-center text-slate-400 text-xs flex flex-col items-center justify-center gap-3">
-              <RefreshCw className="w-6 h-6 animate-spin text-amber-400" />
-              <span>در حال دریافت لیست کاربران...</span>
-            </div>
-          ) : filteredUsers.length === 0 ? (
-            <div className="py-12 text-center text-slate-500 text-xs bg-slate-800/20 rounded-2xl border border-dashed border-slate-800">
-              کاربری با این مشخصات یافت نشد.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/50">
-              <table className="w-full text-right text-xs">
-                <thead className="bg-slate-800/80 text-slate-400 font-medium border-b border-slate-800">
-                  <tr>
-                    <th className="p-3.5">مشخصات کاربر</th>
-                    <th className="p-3.5">نقش</th>
-                    <th className="p-3.5">پلن</th>
-                    <th className="p-3.5">وضعیت اشتراک</th>
-                    <th className="p-3.5">اعتبار باقی‌مانده</th>
-                    <th className="p-3.5">تاریخ ثبت‌نام</th>
-                    <th className="p-3.5 text-center">عملیات</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 text-slate-200">
-                  {filteredUsers.map((user) => {
-                    const rem = getRemainingDaysText(user);
-                    const isUserActive = user.subscriptionStatus === 'active' || user.role === 'admin';
-
-                    return (
-                      <tr key={user.id} className="hover:bg-slate-800/40 transition-colors">
-                        {/* User Details */}
-                        <td className="p-3.5">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 font-bold text-xs uppercase">
-                              {user.fullName ? user.fullName.charAt(0) : user.username.charAt(0)}
-                            </div>
-                            <div>
-                              <div className="font-bold text-white flex items-center gap-1.5">
-                                {user.fullName || user.username}
-                                {user.role === 'admin' && (
-                                  <Crown className="w-3.5 h-3.5 text-amber-400 inline" title="ادمین ارشد" />
-                                )}
-                              </div>
-                              <div className="text-[11px] text-slate-400 dir-ltr text-right font-mono">
-                                @{user.username} {user.email ? `• ${user.email}` : ''}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-
-                        {/* Role */}
-                        <td className="p-3.5">
-                          {user.role === 'admin' ? (
-                            <span className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold text-[11px] inline-flex items-center gap-1">
-                              <Shield className="w-3 h-3 text-purple-400" />
-                              ادمین
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 border border-slate-700 text-[11px]">
-                              کاربر معمولی
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Plan */}
-                        <td className="p-3.5">
-                          <span className={`px-2 py-0.5 rounded-md text-[11px] font-bold ${
-                            user.plan === 'vip' 
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
-                              : user.plan === 'pro'
-                              ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                              : 'bg-slate-800 text-slate-400'
-                          }`}>
-                            {user.plan === 'vip' ? 'VIP' : user.plan === 'pro' ? 'Pro' : 'رایگان'}
-                          </span>
-                        </td>
-
-                        {/* Subscription Status Badge */}
-                        <td className="p-3.5">
-                          {user.role === 'admin' || user.subscriptionStatus === 'active' ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                              فعال
-                            </span>
-                          ) : user.subscriptionStatus === 'expired' ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-medium">
-                              <Clock className="w-3 h-3 text-amber-400" />
-                              منقضی شده
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/15 border border-red-500/30 text-red-300 text-[11px] font-medium">
-                              <XCircle className="w-3 h-3 text-red-400" />
-                              غیرفعال
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Expiry Days */}
-                        <td className="p-3.5">
-                          <div className={`px-2.5 py-1 rounded-xl border text-[11px] inline-block ${rem.badgeBg} ${rem.color}`}>
-                            {rem.text}
-                          </div>
-                        </td>
-
-                        {/* Created At */}
-                        <td className="p-3.5 text-slate-400 text-[11px] dir-ltr text-right font-mono">
-                          {new Date(user.createdAt).toLocaleDateString('fa-IR')}
-                        </td>
-
-                        {/* Actions */}
-                        <td className="p-3.5 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            {/* Quick Status Switch */}
-                            <button
-                              onClick={() => handleToggleStatus(user)}
-                              disabled={user.role === 'admin'}
-                              className={`px-2 py-1 rounded-lg text-[11px] font-bold border transition-all ${
-                                isUserActive
-                                  ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20'
-                                  : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
-                              } ${user.role === 'admin' ? 'opacity-40 cursor-not-allowed' : ''}`}
-                              title={isUserActive ? 'غیرفعال‌سازی سریع' : 'فعال‌سازی سریع'}
-                            >
-                              {isUserActive ? 'غیرفعال کن' : 'فعال کن'}
-                            </button>
-
-                            {/* Edit / Subscription Modal Trigger */}
-                            <button
-                              onClick={() => handleOpenEdit(user)}
-                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 hover:text-amber-300 border border-slate-700 transition-all"
-                              title="مدیریت تمدید و ویرایش"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-
-                            {/* Delete User */}
-                            {user.email.toLowerCase() !== 'amir.r.an37@gmail.com' && (
-                              <button
-                                onClick={() => setDeletingUserId(user.id)}
-                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-950/60 text-red-400 hover:text-red-300 border border-slate-700 transition-all"
-                                title="حذف کاربر"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </div>
+              {/* Users Table */}
+              <div className="bg-slate-950/60 rounded-2xl border border-slate-800 overflow-x-auto">
+                <table className="w-full text-right text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/60 font-semibold">
+                      <th className="p-3.5">کاربر</th>
+                      <th className="p-3.5">اطلاعات تماس</th>
+                      <th className="p-3.5">نقش</th>
+                      <th className="p-3.5">پلن</th>
+                      <th className="p-3.5">وضعیت اشتراک</th>
+                      <th className="p-3.5">اعتبار باقی‌مانده</th>
+                      <th className="p-3.5 text-center">عملیات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                    {loading ? (
+                      <tr>
+                        <td colSpan={7} className="p-8 text-center text-slate-400">
+                          <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-amber-400" />
+                          <span>در حال دریافت لیست کاربران...</span>
                         </td>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    ) : filteredUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="p-8 text-center text-slate-400">
+                          هیچ کاربری با مشخصات جستجو شده یافت نشد.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredUsers.map((user) => {
+                        const remaining = getRemainingDaysText(user);
+                        const isAdminUser = user.role === 'admin';
+
+                        return (
+                          <tr key={user.id} className="hover:bg-slate-800/30 transition-colors">
+                            {/* User Info */}
+                            <td className="p-3.5">
+                              <div className="flex items-center gap-2.5">
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs ${
+                                  isAdminUser 
+                                    ? 'bg-gradient-to-tr from-amber-500 to-yellow-300 text-slate-950 shadow-sm'
+                                    : 'bg-slate-800 text-amber-400 border border-slate-700'
+                                }`}>
+                                  {user.fullName ? user.fullName.charAt(0) : user.username.charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                  <span className="font-bold text-white block">
+                                    {user.fullName || user.username}
+                                  </span>
+                                  <span className="text-[11px] text-slate-400 dir-ltr font-mono">
+                                    @{user.username}
+                                  </span>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Contact */}
+                            <td className="p-3.5 text-slate-300 text-[11px]">
+                              <div>{user.email || '-'}</div>
+                              <div className="text-slate-400 dir-ltr font-mono">{user.phone || '-'}</div>
+                            </td>
+
+                            {/* Role */}
+                            <td className="p-3.5">
+                              {isAdminUser ? (
+                                <span className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[11px] font-bold flex items-center gap-1 w-max">
+                                  <Shield className="w-3 h-3 text-purple-400" />
+                                  مدیر سیستم
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 border border-slate-700 text-[11px]">
+                                  کاربر معمولی
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Plan */}
+                            <td className="p-3.5">
+                              <span className={`px-2 py-0.5 rounded-md text-[11px] font-bold ${
+                                isAdminUser
+                                  ? 'bg-gradient-to-r from-amber-500/30 to-yellow-500/30 text-amber-300 border border-amber-400/40 shadow-sm'
+                                  : user.plan === 'vip' 
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
+                                  : user.plan === 'pro'
+                                  ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                                  : 'bg-slate-800 text-slate-400'
+                              }`}>
+                                {isAdminUser ? '👑 دسترسی طلایی' : user.plan === 'vip' ? 'VIP' : user.plan === 'pro' ? 'Pro' : 'رایگان'}
+                              </span>
+                            </td>
+
+                            {/* Status */}
+                            <td className="p-3.5">
+                              {isAdminUser || user.subscriptionStatus === 'active' ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                  فعال
+                                </span>
+                              ) : user.subscriptionStatus === 'expired' ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-medium">
+                                  <Clock className="w-3 h-3 text-amber-400" />
+                                  منقضی شده
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-400 text-[11px]">
+                                  غیرفعال
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Remaining Days */}
+                            <td className="p-3.5">
+                              <span className={`text-[11px] px-2.5 py-1 rounded-lg border ${remaining.badgeBg} ${remaining.color}`}>
+                                {remaining.text}
+                              </span>
+                            </td>
+
+                            {/* Actions */}
+                            <td className="p-3.5 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  onClick={() => handleOpenEdit(user)}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 border border-slate-700 transition-all cursor-pointer"
+                                  title="تمدید اشتراک / تغییر سطح دسترسی"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+
+                                <button
+                                  onClick={() => handleToggleStatus(user)}
+                                  className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                                    user.subscriptionStatus === 'active'
+                                      ? 'bg-slate-800 hover:bg-amber-500/20 text-slate-300 hover:text-amber-400 border-slate-700'
+                                      : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                                  }`}
+                                  title={user.subscriptionStatus === 'active' ? 'غیرفعال‌سازی' : 'فعال‌سازی سریع'}
+                                >
+                                  {user.subscriptionStatus === 'active' ? <XCircle className="w-3.5 h-3.5" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                                </button>
+
+                                {currentUser?.id !== user.id && (
+                                  <button
+                                    onClick={() => setDeletingUserId(user.id)}
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-500/20 text-slate-300 hover:text-red-400 border border-slate-700 transition-all cursor-pointer"
+                                    title="حذف کاربر"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
+
+          {/* TAB 2: PURCHASE REQUESTS & DEPOSITS */}
+          {adminTab === 'requests' && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-slate-800/50 border border-slate-700/60 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Receipt className="w-4 h-4 text-emerald-400" />
+                    لیست فاکتورها و درخواست‌های کارت به کارت
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    درخواست‌های ارتقا به همراه ۴ رقم آخر کارت یا کدهای پیگیری واریزی کاربران
+                  </p>
+                </div>
+                <button
+                  onClick={loadPurchaseRequests}
+                  disabled={loadingRequests}
+                  className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingRequests ? 'animate-spin' : ''}`} />
+                  <span>بروزرسانی</span>
+                </button>
+              </div>
+
+              {loadingRequests ? (
+                <div className="p-12 text-center text-slate-400">
+                  <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-2 text-emerald-400" />
+                  <span>در حال دریافت لیست درخواست‌ها...</span>
+                </div>
+              ) : purchaseRequests.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 bg-slate-950/40 rounded-2xl border border-slate-800">
+                  هیچ درخواستی تاکنون ثبت نشده است.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {purchaseRequests.map((reqItem) => {
+                    const isPending = reqItem.status === 'pending';
+                    const isApproved = reqItem.status === 'approved';
+                    const isRejected = reqItem.status === 'rejected';
+
+                    return (
+                      <div 
+                        key={reqItem.id} 
+                        className={`p-4 rounded-2xl border flex flex-col justify-between space-y-3 transition-all ${
+                          isPending 
+                            ? 'bg-amber-500/10 border-amber-500/40 shadow-lg shadow-amber-500/5' 
+                            : isApproved
+                            ? 'bg-slate-900/60 border-emerald-500/30'
+                            : 'bg-slate-900/40 border-red-500/20 opacity-75'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2 pb-2 border-b border-white/10">
+                          <div>
+                            <span className="text-xs font-black text-white block">
+                              کاربر: {reqItem.fullName || reqItem.username} (@{reqItem.username})
+                            </span>
+                            <span className="text-[11px] text-slate-400">
+                              شماره تماس / ایمیل: {reqItem.userPhone || reqItem.userEmail || 'ثبت نشده'}
+                            </span>
+                          </div>
+
+                          <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold border ${
+                            isPending 
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                              : isApproved
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                              : 'bg-red-500/20 text-red-300 border-red-500/30'
+                          }`}>
+                            {isPending ? 'در انتظار بررسی' : isApproved ? 'تایید شده ✓' : 'رد شده ✕'}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-white/5">
+                            <span className="text-slate-400 text-[10px] block">پلن درخواستی:</span>
+                            <span className="font-bold text-amber-300">{reqItem.planTitle} ({reqItem.billingCycleMonths} ماهه)</span>
+                          </div>
+
+                          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-white/5">
+                            <span className="text-slate-400 text-[10px] block">روش پرداخت:</span>
+                            <span className="font-bold text-slate-200">
+                              {reqItem.paymentMethod === 'card_to_card' ? 'کارت به کارت' : 'درگاه پرداخت'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-slate-950/80 border border-amber-500/20 text-xs flex items-center justify-between">
+                          <span className="text-slate-400 text-[11px]">۴ رقم آخر کارت / کد پیگیری:</span>
+                          <span className="font-mono text-sm font-black text-amber-300 tracking-widest dir-ltr">
+                            {reqItem.transactionId || 'ثبت نشده'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                          <span>تاریخ ثبت: {new Date(reqItem.createdAt).toLocaleDateString('fa-IR')}</span>
+                          {isPending && (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleApproveRequest(reqItem.id)}
+                                disabled={processingReqId === reqItem.id}
+                                className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-lg transition-all cursor-pointer shadow-md"
+                              >
+                                {processingReqId === reqItem.id ? '...' : 'تایید فیش'}
+                              </button>
+                              <button
+                                onClick={() => handleRejectRequest(reqItem.id)}
+                                disabled={processingReqId === reqItem.id}
+                                className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 font-bold rounded-lg transition-all cursor-pointer"
+                              >
+                                رد
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 3: BACKUP & SERVER MIGRATION */}
+          {adminTab === 'backup' && (
+            <div className="space-y-6">
+              
+              {/* Export Backup Section */}
+              <div className="p-5 rounded-2xl bg-slate-800/50 border border-slate-700/60 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-3 rounded-2xl bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                    <Download className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">۱. دانلود بکاپ کامل دیتابیس (خروجی)</h3>
+                    <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                      از تمام اطلاعات کاربران، رمزهای عبور، توکن‌های ربات بله، اتصالات کانال‌ها، تنظیمات پیشرفته و لایسنس‌ها فایل JSON دریافت کنید. اگر سرور را تغییر دهید، تمام اتصالات خودکار به سرور جدید منتقل می‌شوند.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    onClick={handleExportBackup}
+                    disabled={exportingBackup}
+                    className="px-5 py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 text-white font-black text-xs rounded-xl shadow-lg shadow-blue-500/20 transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    <Download className={`w-4 h-4 ${exportingBackup ? 'animate-bounce' : ''}`} />
+                    <span>{exportingBackup ? 'در حال ایجاد فایل بکاپ...' : 'دانلود فایل بکاپ کامل (JSON)'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Import Backup Section */}
+              <div className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-3 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-amber-200">۲. بازیابی و انتقال داده‌ها به سرور جدید (ایمپورت)</h3>
+                    <p className="text-xs text-amber-200/80 mt-1 leading-relaxed">
+                      فایل بکاپ JSON دانلود شده از سرور قبلی را انتخاب کرده و روی «اعمال و بازیابی کامل» کلیک کنید. تمامی کانال‌ها و کاربران فوراً روی این سرور متصل خواهند شد.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row items-center gap-3">
+                    <label className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold rounded-xl border border-white/20 cursor-pointer flex items-center gap-2">
+                      <FileJson className="w-4 h-4 text-amber-400" />
+                      <span>{importFileName ? importFileName : 'انتخاب فایل بکاپ (autorun_backup.json)'}</span>
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                    </label>
+
+                    {importedJsonText && (
+                      <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
+                        <Check className="w-4 h-4" /> فایل با موفقیت خوانده شد ({importedJsonText.length} کاراکتر)
+                      </span>
+                    )}
+                  </div>
+
+                  {importedJsonText && (
+                    <button
+                      onClick={handleImportBackup}
+                      disabled={importingBackup}
+                      className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <Database className="w-4 h-4" />
+                      <span>{importingBackup ? 'در حال بازیابی اطلاعات...' : 'تایید و بازیابی کامل روی سرور جدید'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          )}
+
         </div>
 
-        {/* Modal: Edit Subscription & User Settings */}
+        {/* Modal: Edit User / Subscription */}
         {editingUser && (
           <div className="fixed inset-0 z-60 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl animate-fade-in dir-rtl admin-modal-subdialog">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-5 space-y-4 animate-fade-in dir-rtl admin-modal-subdialog">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-amber-400" />
-                  مدیریت اشتراک و دسترسی @{editingUser.username}
+                  <Edit3 className="w-4 h-4 text-amber-400" />
+                  مدیریت کاربر: {editingUser.username}
                 </h3>
-                <button onClick={() => setEditingUser(null)} className="text-slate-400 hover:text-white">✕</button>
+                <button onClick={() => setEditingUser(null)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
               </div>
 
-              {/* Status Picker */}
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1.5">وضعیت اشتراک:</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditStatus('active')}
-                    className={`py-2 text-xs rounded-xl border font-bold transition-all ${
-                      editStatus === 'active' 
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300' 
-                        : 'bg-slate-800 border-slate-700 text-slate-400'
-                    }`}
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="text-slate-400 block mb-1">نقش دسترسی:</label>
+                  <select
+                    value={editRole}
+                    onChange={(e) => setEditRole(e.target.value as any)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
                   >
-                    فعال
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditStatus('inactive')}
-                    className={`py-2 text-xs rounded-xl border font-bold transition-all ${
-                      editStatus === 'inactive' 
-                        ? 'bg-red-500/20 border-red-500 text-red-300' 
-                        : 'bg-slate-800 border-slate-700 text-slate-400'
-                    }`}
-                  >
-                    غیرفعال
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditStatus('expired')}
-                    className={`py-2 text-xs rounded-xl border font-bold transition-all ${
-                      editStatus === 'expired' 
-                        ? 'bg-amber-500/20 border-amber-500 text-amber-300' 
-                        : 'bg-slate-800 border-slate-700 text-slate-400'
-                    }`}
-                  >
-                    منقضی شده
-                  </button>
-                </div>
-              </div>
-
-              {/* Subscription Duration Quick Select */}
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1.5">تمدید اعتبار اشتراک (افزایش زمان):</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { label: '۳۰ روزه (۱ ماه)', days: 30 },
-                    { label: '۹۰ روزه (۳ ماه)', days: 90 },
-                    { label: '۳۶۵ روزه (۱ سال)', days: 365 },
-                    { label: '۷ روزه آزمایشی', days: 7 },
-                    { label: 'دائمی (نامحدود)', days: -1 },
-                    { label: 'تعداد روز سفارشی', days: -2 },
-                  ].map((opt) => (
-                    <button
-                      key={opt.days}
-                      type="button"
-                      onClick={() => setSelectedDays(opt.days)}
-                      className={`py-2 px-1 text-[11px] rounded-xl border font-bold transition-all ${
-                        selectedDays === opt.days
-                          ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-sm'
-                          : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                    <option value="user">کاربر معمولی</option>
+                    <option value="admin">مدیر سیستم (Admin - دسترسی طلایی)</option>
+                  </select>
                 </div>
 
-                {selectedDays === -2 && (
-                  <div className="mt-2.5">
-                    <input
-                      type="number"
-                      placeholder="تعداد روز را وارد کنید (مثلا: ۴۵)..."
-                      value={customDaysInput}
-                      onChange={(e) => setCustomDaysInput(e.target.value)}
-                      className="w-full bg-slate-950 border border-amber-500/50 p-2 rounded-xl text-xs text-white focus:outline-none"
-                    />
+                <div>
+                  <label className="text-slate-400 block mb-1">پلن اشتراک:</label>
+                  <select
+                    value={editPlan}
+                    onChange={(e) => setEditPlan(e.target.value as any)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                  >
+                    <option value="free">رایگان (Free)</option>
+                    <option value="pro">حرفه‌ای (PRO)</option>
+                    <option value="vip">ویژه (VIP)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-slate-400 block mb-1">وضعیت اشتراک:</label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value as any)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                  >
+                    <option value="active">فعال</option>
+                    <option value="inactive">غیرفعال</option>
+                    <option value="expired">منقضی شده</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-slate-400 block mb-1">افزایش/تمدید اعتیار (روز):</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      { label: '+۳۰ روز', value: 30 },
+                      { label: '+۹۰ روز', value: 90 },
+                      { label: '+۱ سال', value: 365 },
+                      { label: 'دائم', value: 3650 },
+                    ].map((btn) => (
+                      <button
+                        key={btn.value}
+                        type="button"
+                        onClick={() => { setSelectedDays(btn.value); setCustomDaysInput(''); }}
+                        className={`p-2 rounded-xl border font-bold text-center transition-all cursor-pointer ${
+                          selectedDays === btn.value 
+                            ? 'bg-amber-500 text-slate-950 border-amber-400' 
+                            : 'bg-slate-950 border-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {btn.label}
+                      </button>
+                    ))}
                   </div>
-                )}
+                </div>
               </div>
 
-              {/* Plan Selection */}
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1.5">نوع پلن اشتراک:</label>
-                <select
-                  value={editPlan}
-                  onChange={(e) => setEditPlan(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                >
-                  <option value="pro">Pro (حرفه‌ای)</option>
-                  <option value="vip">VIP (ویژه دائم)</option>
-                  <option value="free">Free (رایگان محدود)</option>
-                </select>
-              </div>
-
-              {/* Role Selection */}
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1.5">سطح دسترسی (نقش):</label>
-                <select
-                  value={editRole}
-                  onChange={(e) => setEditRole(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                >
-                  <option value="user">کاربر معمولی (User)</option>
-                  <option value="admin">مدیر سیستم (Admin)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+              <div className="flex items-center gap-2 pt-2">
                 <button
-                  onClick={handleSaveSubscription}
+                  onClick={handleSaveEdit}
                   disabled={submittingEdit}
-                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-amber-500/20"
+                  className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2.5 rounded-xl text-xs transition-all cursor-pointer"
                 >
-                  {submittingEdit ? 'در حال ذخیره...' : 'اعمال و ذخیره اشتراک'}
+                  {submittingEdit ? 'در حال ذخیره...' : 'ذخیره تغییرات'}
                 </button>
                 <button
                   onClick={() => setEditingUser(null)}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition-all"
+                  className="px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
                 >
                   انصراف
                 </button>
@@ -687,117 +1045,91 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
         {/* Modal: Add User */}
         {isAddUserOpen && (
           <div className="fixed inset-0 z-60 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-            <form onSubmit={handleCreateUser} className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 space-y-3.5 shadow-2xl animate-fade-in dir-rtl admin-modal-subdialog">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-5 space-y-4 animate-fade-in dir-rtl admin-modal-subdialog">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <UserPlus className="w-4 h-4 text-amber-400" />
-                  تعریف و ایجاد کاربر جدید
+                  ایجاد کاربر جدید
                 </h3>
-                <button type="button" onClick={() => setIsAddUserOpen(false)} className="text-slate-400 hover:text-white">✕</button>
+                <button onClick={() => setIsAddUserOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
               </div>
 
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1">نام کاربری (الزامی):</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="مثلا: user123"
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1">نام کامل / عنوان:</label>
-                <input
-                  type="text"
-                  placeholder="مثلا: علی رضایی"
-                  value={newFullName}
-                  onChange={(e) => setNewFullName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
+              <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
                 <div>
-                  <label className="text-xs text-slate-300 font-medium block mb-1">ایمیل:</label>
-                  <input
-                    type="email"
-                    placeholder="user@gmail.com"
-                    value={newEmail}
-                    onChange={(e) => setNewEmail(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-300 font-medium block mb-1">شماره همراه:</label>
+                  <label className="text-slate-400 block mb-1">نام کاربری (*):</label>
                   <input
                     type="text"
-                    placeholder="09120000000"
-                    value={newPhone}
-                    onChange={(e) => setNewPhone(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
+                    required
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
                   />
                 </div>
-              </div>
 
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1">رمز عبور (الزامی):</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="••••••••"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs text-slate-300 font-medium block mb-1">نقش کاربر:</label>
-                  <select
-                    value={newRole}
-                    onChange={(e) => setNewRole(e.target.value as any)}
-                    className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none"
-                  >
-                    <option value="user">کاربر عادی</option>
-                    <option value="admin">ادمین سیستم</option>
-                  </select>
+                  <label className="text-slate-400 block mb-1">رمز عبور (*):</label>
+                  <input
+                    type="password"
+                    required
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                  />
                 </div>
-                <div>
-                  <label className="text-xs text-slate-300 font-medium block mb-1">مدت اولیه اشتراک:</label>
-                  <select
-                    value={newDays}
-                    onChange={(e) => setNewDays(parseInt(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-700 p-2 rounded-xl text-xs text-white focus:outline-none"
-                  >
-                    <option value={30}>۳۰ روز (۱ ماه)</option>
-                    <option value={90}>۹۰ روز (۳ ماه)</option>
-                    <option value={365}>۱ سال</option>
-                    <option value={-1}>دائمی / نامحدود</option>
-                  </select>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
-                <button
-                  type="submit"
-                  disabled={submittingAdd}
-                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-amber-500/20"
-                >
-                  {submittingAdd ? 'در حال ثبت...' : 'ساخت حساب کاربر'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsAddUserOpen(false)}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition-all"
-                >
-                  انصراف
-                </button>
-              </div>
-            </form>
+                <div>
+                  <label className="text-slate-400 block mb-1">نام کامل:</label>
+                  <input
+                    type="text"
+                    value={newFullName}
+                    onChange={(e) => setNewFullName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-slate-400 block mb-1">پلن:</label>
+                    <select
+                      value={newPlan}
+                      onChange={(e) => setNewPlan(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                    >
+                      <option value="pro">حرفه‌ای (PRO)</option>
+                      <option value="vip">ویژه (VIP)</option>
+                      <option value="free">رایگان (Free)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-slate-400 block mb-1">اعتبار (روز):</label>
+                    <input
+                      type="number"
+                      value={newDays}
+                      onChange={(e) => setNewDays(parseInt(e.target.value, 10) || 30)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    type="submit"
+                    disabled={submittingAdd}
+                    className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2.5 rounded-xl text-xs transition-all cursor-pointer"
+                  >
+                    {submittingAdd ? 'در حال ساخت...' : 'ساخت کاربر'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddUserOpen(false)}
+                    className="px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
+                  >
+                    انصراف
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
 
@@ -814,13 +1146,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
               <div className="flex items-center gap-2 pt-2">
                 <button
                   onClick={() => handleDeleteUser(deletingUserId)}
-                  className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-2 rounded-xl text-xs transition-all"
+                  className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-2 rounded-xl text-xs transition-all cursor-pointer"
                 >
                   بله، حذف کن
                 </button>
                 <button
                   onClick={() => setDeletingUserId(null)}
-                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-xl text-xs transition-all"
+                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-xl text-xs transition-all cursor-pointer"
                 >
                   انصراف
                 </button>

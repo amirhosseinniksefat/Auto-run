@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { X, User, Lock, Mail, Phone, LogIn, UserPlus, Sparkles, AlertCircle, CheckCircle2, ShieldCheck, KeyRound, ArrowRight } from 'lucide-react';
-import { loginUser, registerUser, forgotPassword } from '../services/api';
+import React, { useState, useEffect } from 'react';
+import { X, User, Lock, Mail, Phone, LogIn, UserPlus, Sparkles, AlertCircle, CheckCircle2, ShieldCheck, KeyRound, ArrowRight, Send, Check } from 'lucide-react';
+import { loginUser, registerUser, forgotPassword, sendEmailOtp } from '../services/api';
 import { User as UserType } from '../types';
 
 interface AuthModalProps {
@@ -35,10 +35,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
 
+  // OTP Verification State
+  const [regOtpCode, setRegOtpCode] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+
   // Forgot Form
   const [forgotIdentifier, setForgotIdentifier] = useState('');
 
+  useEffect(() => {
+    let timer: any;
+    if (countdown > 0) {
+      timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [countdown]);
+
   if (!isOpen) return null;
+
+  const handleSendOtp = async () => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    const cleanEmail = regEmail.trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const allowedDomains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'proton.me', 'protonmail.com', 'live.com', 'yandex.com', 'zoho.com'];
+    const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
+
+    if (!cleanEmail || !emailRegex.test(cleanEmail) || !emailDomain || !allowedDomains.includes(emailDomain)) {
+      setErrorMsg('ثبت‌نام فقط با سرویس‌های ایمیل معتبر (Gmail، Yahoo، Outlook، Hotmail، iCloud) امکان‌پذیر است.');
+      return;
+    }
+
+    setSendingOtp(true);
+    try {
+      const res = await sendEmailOtp(cleanEmail);
+      setOtpSent(true);
+      setRegOtpCode('');
+      setSuccessMsg(res.message);
+      setCountdown(120);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'خطا در ارسال کد تایید ایمیل.');
+    } finally {
+      setSendingOtp(false);
+    }
+  };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,14 +118,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const cleanEmail = regEmail.trim();
     const cleanPassword = regPassword.trim();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const allowedDomains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'proton.me', 'protonmail.com', 'live.com', 'yandex.com', 'zoho.com'];
+    const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
 
     if (!regUsername.trim() || !cleanPassword) {
       setErrorMsg('نام کاربری و رمز عبور الزامی است.');
       return;
     }
 
-    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
-      setErrorMsg('لطفاً یک آدرس ایمیل واقعی و معتبر وارد کنید (مثال: name@gmail.com).');
+    if (!cleanEmail || !emailRegex.test(cleanEmail) || !emailDomain || !allowedDomains.includes(emailDomain)) {
+      setErrorMsg('ثبت‌نام فقط با سرویس‌های ایمیل معتبر (Gmail، Yahoo، Outlook، Hotmail، iCloud) امکان‌پذیر است.');
       return;
     }
 
@@ -107,8 +151,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         email: cleanEmail,
         phone: regPhone.trim(),
         password: cleanPassword,
+        otpCode: regOtpCode.trim(),
       });
-      setSuccessMsg('ثبت‌نام با موفقیت انجام شد! در حال انتقال...');
+      setSuccessMsg('ثبت‌نام و تایید ایمیل با موفقیت انجام شد! در حال انتقال...');
       setTimeout(() => {
         onSuccess(res.user, res.token);
         onClose();
@@ -136,26 +181,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setSuccessMsg(res.message);
     } catch (err: any) {
       setErrorMsg(err.message || 'خطا در بازیابی رمز عبور.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleQuickDemoLogin = async () => {
-    setIsLoading(true);
-    setErrorMsg(null);
-    try {
-      const res = await loginUser({
-        identifier: 'amir.r.an37@gmail.com',
-        password: '137819',
-      });
-      setSuccessMsg(`ورود مدیر انجام شد! خوش آمدید ${res.user.fullName}`);
-      setTimeout(() => {
-        onSuccess(res.user, res.token);
-        onClose();
-      }, 500);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'خطا در ورود به اکانت مدیریت.');
     } finally {
       setIsLoading(false);
     }
@@ -293,19 +318,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </>
                 )}
               </button>
-
-              {/* Quick Demo Button */}
-              <div className="pt-2 border-t border-white/10 text-center">
-                <button
-                  type="button"
-                  onClick={handleQuickDemoLogin}
-                  disabled={isLoading}
-                  className="w-full py-2 bg-blue-500/15 border border-blue-500/30 text-blue-300 hover:bg-blue-500/25 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-                  <span>ورود سریع با اکانت مدیریت (Demo)</span>
-                </button>
-              </div>
             </form>
           )}
 
@@ -361,7 +373,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div className="space-y-1">
                 <label className="block text-xs font-bold text-slate-300 flex items-center gap-1.5">
                   <Mail className="w-3.5 h-3.5 text-purple-400" />
-                  <span>ایمیل آدرس واقعی:</span>
+                  <span>ایمیل آدرس (فقط Gmail / Yahoo / Outlook):</span>
                 </label>
                 <input
                   type="email"
@@ -466,8 +478,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
 
         {/* Footer Note */}
-        <div className="p-3 bg-black/60 border-t border-white/10 text-center text-[10px] text-slate-500">
-          🔒 تمامی اطلاعات شما به صورت رمزنگاری‌شده در سرور Auto run حفاظت می‌شود.
+        <div className="p-3 bg-black/60 border-t border-white/10 text-center text-xs font-bold text-slate-300 flex items-center justify-center gap-1.5">
+          <span>🔒</span>
+          <span>تمامی اطلاعات شما به صورت رمزنگاری‌شده در سرور Auto run حفاظت می‌شود.</span>
         </div>
       </div>
     </div>

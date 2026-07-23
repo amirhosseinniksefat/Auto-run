@@ -254,6 +254,7 @@ export default function App() {
         onOpenAuth={handleOpenAuth}
         onLogout={handleLogout}
         onOpenAdminPanel={() => setIsAdminPanelOpen(true)}
+        onOpenSubscriptions={() => setIsSubscriptionsOpen(true)}
         theme={theme}
         onToggleTheme={handleToggleTheme}
       />
@@ -262,6 +263,8 @@ export default function App() {
       <CreateConnectionForm 
         onSubmit={handleCreateConnection} 
         isLoading={isFormSubmitting} 
+        currentUser={currentUser}
+        onOpenSubscriptions={() => setIsSubscriptionsOpen(true)}
       />
 
 
@@ -346,6 +349,8 @@ export default function App() {
         connection={selectedSettingsConn}
         onClose={() => setSelectedSettingsConn(null)}
         onSaved={loadData}
+        currentUser={currentUser}
+        onOpenSubscriptions={() => setIsSubscriptionsOpen(true)}
       />
 
       <AuthModal
@@ -360,6 +365,15 @@ export default function App() {
         onClose={() => setIsAdminPanelOpen(false)}
         currentUser={currentUser}
         authToken={authToken}
+      />
+
+      <SubscriptionsModal
+        isOpen={isSubscriptionsOpen}
+        onClose={() => setIsSubscriptionsOpen(false)}
+        currentUser={currentUser}
+        authToken={authToken}
+        onUserUpdated={(updatedUser) => setCurrentUser(updatedUser)}
+        onOpenAuth={handleOpenAuth}
       />
 
     </div>

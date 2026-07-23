@@ -80,7 +80,7 @@ export const Header: React.FC<HeaderProps> = ({
               <span>اشتراک‌ها</span>
               {currentUser && (
                 <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-400/20 text-amber-300 font-extrabold border border-amber-400/30">
-                  {currentUser.plan?.toUpperCase() || 'FREE'}
+                  {currentUser.role === 'admin' ? 'دسترسی طلایی' : (currentUser.plan?.toUpperCase() || 'FREE')}
                 </span>
               )}
             </button>

@@ -243,7 +243,7 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
             <span>اشتراک فعال من</span>
             {currentUser && (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-400/20 text-yellow-300 font-bold">
-                {currentUser.plan?.toUpperCase() || 'FREE'}
+                {currentUser.role === 'admin' ? 'دسترسی طلایی' : (currentUser.plan?.toUpperCase() || 'FREE')}
               </span>
             )}
           </button>
@@ -268,11 +268,21 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
           {activeTab === 'plans' && !isCheckoutOpen && (
             <div className="space-y-6">
               
+              {currentUser?.role === 'admin' && (
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-500/20 border border-amber-500/40 text-amber-200 text-xs flex items-center gap-3 shadow-lg shadow-amber-500/5">
+                  <Crown className="w-5 h-5 text-amber-400 shrink-0 animate-bounce" />
+                  <div>
+                    <span className="font-extrabold text-amber-300 block text-sm">👑 دسترسی طلایی مدیر ارشد سیستم</span>
+                    <span className="text-[11px] text-amber-200/90">شما دارای دسترسی کامل و نامحدود به تمامی امکانات، ارسال دوگانه بله، بازنویسی هوشمند هوش مصنوعی و اتصالات همزمان هستید.</span>
+                  </div>
+                </div>
+              )}
+              
               {/* Billing Cycle Selector */}
               <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl neu-inset bg-slate-950/40 border border-white/5">
                 <div>
                   <h4 className="text-xs font-bold text-slate-200">دوره تمدید و فاکتور:</h4>
-                  <p className="text-[11px] text-slate-400">با انتخاب دوره‌های طولانی‌تر تا ۴۰٪ تخفیف طلایی دریافت کنید.</p>
+                  <p className="text-[11px] text-slate-400">با انتخاب دوره‌های طولانی‌تر تا ۴۰٪ تخفیف دریافت کنید.</p>
                 </div>
 
                 <div className="flex items-center gap-1.5 p-1 bg-slate-900 rounded-xl border border-white/10 text-xs font-bold">
@@ -287,14 +297,16 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                       onClick={() => setBillingCycle(cycle.months)}
                       className={`relative px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
                         billingCycle === cycle.months
-                          ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 font-black shadow-md'
+                          ? 'bg-slate-800 text-amber-300 border border-amber-500/40 shadow-sm font-bold'
                           : 'text-slate-400 hover:text-white'
                       }`}
                     >
                       {cycle.label}
                       {cycle.discount && (
-                        <span className={`mr-1 text-[9px] px-1 rounded-full ${
-                          billingCycle === cycle.months ? 'bg-black/30 text-white' : 'bg-yellow-400/20 text-yellow-300'
+                        <span className={`mr-1 text-[10px] px-1.5 py-0.2 rounded-md font-bold ${
+                          billingCycle === cycle.months 
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
+                            : 'bg-slate-800/80 text-slate-400 border border-slate-700/60'
                         }`}>
                           {cycle.discount}
                         </span>
@@ -315,13 +327,13 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                       key={plan.id}
                       className={`relative rounded-3xl p-5 flex flex-col justify-between transition-all border ${
                         plan.recommended
-                          ? 'neu-flat border-amber-400/50 bg-gradient-to-b from-amber-500/10 to-transparent shadow-xl shadow-amber-500/5 scale-102'
+                          ? 'neu-flat border-amber-500/40 bg-slate-900/80 shadow-xl shadow-amber-500/5 scale-102'
                           : 'neu-inset border-white/10 bg-slate-900/30 hover:border-white/20'
                       }`}
                     >
                       {plan.badge && (
-                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-[10px] shadow-lg flex items-center gap-1">
-                          <Star className="w-3 h-3 fill-slate-950" />
+                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-slate-950 text-amber-300 border border-amber-500/50 font-extrabold text-[10px] shadow-lg flex items-center gap-1">
+                          <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                           <span>{plan.badge}</span>
                         </div>
                       )}
@@ -340,7 +352,7 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                           ) : (
                             <div>
                               <div className="flex items-baseline justify-center gap-1">
-                                <span className="text-2xl font-black text-amber-400">
+                                <span className="text-2xl font-black text-amber-300">
                                   {finalPrice.toLocaleString('fa-IR')}
                                 </span>
                                 <span className="text-xs text-slate-400">تومان</span>
@@ -377,8 +389,8 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                             }}
                             className={`w-full py-3 rounded-2xl font-black text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg ${
                               plan.recommended
-                                ? 'bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:brightness-110 shadow-amber-500/20'
-                                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20'
+                                ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 shadow-amber-500/10'
+                                : 'bg-blue-600/80 hover:bg-blue-600 text-white border border-blue-500/40 shadow-blue-500/10'
                             }`}
                           >
                             <Crown className="w-4 h-4" />
@@ -477,7 +489,7 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="text-slate-300 font-bold">شماره کارت جهت واریز:</span>
                     <button
-                      onClick={() => copyCardToClipboard('6037997512345678')}
+                      onClick={() => copyCardToClipboard('5041721241958751')}
                       className="flex items-center gap-1 text-[11px] text-amber-300 bg-amber-500/20 px-2 py-1 rounded-lg hover:bg-amber-500/30 cursor-pointer"
                     >
                       <Copy className="w-3 h-3" />
@@ -485,19 +497,19 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                     </button>
                   </div>
                   <div className="text-center font-mono text-base font-black text-amber-300 tracking-wider dir-ltr">
-                    6037 - 9975 - 1234 - 5678
+                    5041 - 7212 - 4195 - 8751
                   </div>
-                  <div className="text-[11px] text-slate-400 text-center">
-                    بانک ملی - به نام مدیریت ربات اتوران (پشتیبانی ۲۴ ساعته)
+                  <div className="text-[11px] text-slate-300 text-center font-bold">
+                    بانک رسالت - امیرحسین نیک صفت نوپاشانی
                   </div>
 
                   <div className="pt-2">
                     <label className="text-[11px] font-bold text-slate-300 block mb-1">
-                      شماره پیگیری یا ارجاع بانک / نام واریزکننده:
+                      چهار رقم آخر شماره کارت شما (جهت پیگیری واریز):
                     </label>
                     <input
                       type="text"
-                      placeholder="مثال: 849201 یا واریزی توسط علی محمدی"
+                      placeholder="۴ رقم آخر کارت خود را بنویسید (مثال: ۵۷۵۱)"
                       value={transactionIdInput}
                       onChange={(e) => setTransactionIdInput(e.target.value)}
                       className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-white/10 text-white text-xs outline-none focus:border-amber-400/50"
@@ -536,9 +548,11 @@ export const SubscriptionsModal: React.FC<SubscriptionsModalProps> = ({
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <h3 className="text-lg font-black text-white">پلن {currentUser.plan?.toUpperCase() || 'FREE'}</h3>
+                            <h3 className="text-lg font-black text-white">
+                              {currentUser.role === 'admin' ? 'سطح دسترسی: مدیر ارشد (دسترسی طلایی)' : `پلن ${currentUser.plan?.toUpperCase() || 'FREE'}`}
+                            </h3>
                             <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
-                              {currentUser.subscriptionStatus === 'active' ? 'فعال ✓' : 'منقضی شده ✕'}
+                              {currentUser.role === 'admin' ? 'نامحدود دائمی ✓' : (currentUser.subscriptionStatus === 'active' ? 'فعال ✓' : 'منقضی شده ✕')}
                             </span>
                           </div>
                           <p className="text-xs text-slate-400 mt-1">
