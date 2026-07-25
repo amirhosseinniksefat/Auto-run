@@ -31,11 +31,11 @@ export const Header: React.FC<HeaderProps> = ({
         
         {/* Brand & Domain */}
         <div className="flex items-center gap-3">
-          <div className="relative p-3 neu-inset rounded-2xl text-yellow-400 flex items-center justify-center">
-            <Send className="w-7 h-7 text-yellow-400 animate-pulse" />
+          <div className="relative p-1 neu-inset rounded-2xl flex items-center justify-center bg-slate-900/60 overflow-hidden w-12 h-12 border border-blue-500/30 shadow-lg">
+            <img src="/logo.jpg" alt="Auto run Logo" className="w-full h-full object-cover rounded-xl" />
             <span className="absolute -top-1 -right-1 flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
             </span>
           </div>
           <div>
