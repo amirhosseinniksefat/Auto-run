@@ -89,10 +89,13 @@ export default function App() {
   const loadData = async () => {
     try {
       const data = await fetchConnections();
-      setConnections(data.connections);
-      setStats(data.stats);
-    } catch (err) {
+      setConnections(data.connections || []);
+      setStats(data.stats || { totalConnections: 0, activeConnections: 0, totalTransferred: 0, lastActivity: null });
+    } catch (err: any) {
       console.error('Error fetching connections:', err);
+      if (err?.message?.includes('403') || err?.message?.includes('401') || err?.message?.includes('منقضی')) {
+        checkUserSession();
+      }
     }
   };
 
