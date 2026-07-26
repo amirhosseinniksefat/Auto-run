@@ -193,8 +193,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* Header Bar */}
         <div className="flex items-center justify-between p-5 border-b border-white/10 bg-gradient-to-r from-purple-950/40 via-blue-950/30 to-black/40">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 neu-inset rounded-xl text-yellow-400 bg-yellow-400/10 border border-yellow-400/20">
-              <ShieldCheck className="w-5 h-5 text-yellow-400" />
+            <div className="w-9 h-9 rounded-xl overflow-hidden border border-blue-500/30 shadow-md shrink-0">
+              <img src="/logo.jpg" alt="Auto run Logo" className="w-full h-full object-cover" />
             </div>
             <div>
               <h3 className="text-base font-black text-white">
