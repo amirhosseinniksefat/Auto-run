@@ -1613,23 +1613,28 @@ setInterval(() => {
 // API ROUTES
 
 app.get("/api/connections", (req, res) => {
-  const activeCount = connections.filter((c) => c.status === "active").length;
-  const totalTransferred = connections.reduce((acc, c) => acc + c.transferredCount, 0);
-  const lastAct = connections.reduce((latest: string | null, c) => {
-    if (!c.lastMessageTime) return latest;
-    if (!latest) return c.lastMessageTime;
-    return new Date(c.lastMessageTime) > new Date(latest) ? c.lastMessageTime : latest;
-  }, null);
+  try {
+    const connList = Array.isArray(connections) ? connections : [];
+    const activeCount = connList.filter((c) => c.status === "active").length;
+    const totalTransferred = connList.reduce((acc, c) => acc + (c.transferredCount || 0), 0);
+    const lastAct = connList.reduce((latest: string | null, c) => {
+      if (!c.lastMessageTime) return latest;
+      if (!latest) return c.lastMessageTime;
+      return new Date(c.lastMessageTime) > new Date(latest) ? c.lastMessageTime : latest;
+    }, null);
 
-  res.json({
-    connections,
-    stats: {
-      totalConnections: connections.length,
-      activeConnections: activeCount,
-      totalTransferred,
-      lastActivity: lastAct,
-    },
-  });
+    res.json({
+      connections: connList,
+      stats: {
+        totalConnections: connList.length,
+        activeConnections: activeCount,
+        totalTransferred,
+        lastActivity: lastAct,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در دریافت اطلاعات اتصالات." });
+  }
 });
 
 app.post("/api/connections", async (req, res) => {
