@@ -10,7 +10,8 @@ import { TelegramConnection, ConnectionLog, ForwardedMessageRecord, CreateConnec
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // Persistent Data Storage Paths
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -2777,6 +2778,18 @@ app.post("/api/admin/backup/import", (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: "خطا در بازیابی بکاپ: " + (err.message || "") });
   }
+});
+
+// Express Error Handler Middleware (Catches Payload Too Large 413 & JSON Parse Errors)
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({ error: "حجم فایل بکاپ ارسالی بیش از حد مجاز (۵۰ مگابایت) است." });
+  }
+  if (err instanceof SyntaxError && 'body' in err) {
+    return res.status(400).json({ error: "فرمت فایل JSON ارسالی نامعتبر است." });
+  }
+  console.error("Server Express Error:", err);
+  res.status(500).json({ error: err.message || "خطای داخلی سرور رخ داده است." });
 });
 
 
