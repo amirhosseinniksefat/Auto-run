@@ -945,6 +945,32 @@ async function sendBaleMessage(baleBotToken: string, baleTargetChannel: string, 
         if (textData.ok) return { ok: true };
       }
       return { ok: false, error: data.description || 'خطا در ارسال تصویر به بله' };
+    } else if (method === "sendVideo" && payload.video) {
+      const res = await fetch(`${baseUrl}/sendVideo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: channel,
+          video: payload.video,
+          caption: stripHtmlToPlainText(payload.caption || ""),
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) return { ok: true };
+
+      if (payload.caption) {
+        const textRes = await fetch(`${baseUrl}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: channel,
+            text: stripHtmlToPlainText(payload.caption),
+          }),
+        });
+        const textData = await textRes.json();
+        if (textData.ok) return { ok: true };
+      }
+      return { ok: false, error: data.description || 'خطا در ارسال ویدیو به بله' };
     } else {
       const rawText = payload.text || payload.caption || "پست جدید";
       const cleanText = stripHtmlToPlainText(rawText);
@@ -963,6 +989,52 @@ async function sendBaleMessage(baleBotToken: string, baleTargetChannel: string, 
   } catch (err: any) {
     return { ok: false, error: err.message || 'خطا در برقراری ارتباط با پیام‌رسان بله' };
   }
+}
+
+// Transform post text specifically for Bale forwarding (replace Telegram IDs/links with Bale replacement ID)
+function transformTextForBale(
+  text: string | undefined,
+  conn: TelegramConnection
+): string | undefined {
+  if (!text) return text;
+  
+  const baleReplaceId = conn.baleReplaceId || conn.settings?.baleReplaceId;
+  const baleTarget = conn.baleTargetChannel || conn.settings?.baleTargetChannel;
+  
+  const replaceTarget = baleReplaceId?.trim() || baleTarget?.trim();
+  if (!replaceTarget) return text;
+
+  let result = text;
+
+  let baleHandle = replaceTarget;
+  if (!baleHandle.startsWith('@') && !baleHandle.startsWith('http') && !baleHandle.startsWith('-') && isNaN(Number(baleHandle))) {
+    baleHandle = `@${baleHandle}`;
+  }
+  const baleRaw = baleHandle.replace(/^@/, '');
+
+  const cleanSource = conn.sourceChannel ? conn.sourceChannel.replace(/^@/, '') : '';
+  const cleanTarget = conn.targetChannel ? conn.targetChannel.replace(/^@/, '') : '';
+
+  if (cleanTarget) {
+    result = result.replace(new RegExp(`@${cleanTarget}\\b`, 'gi'), baleHandle);
+    const baleUrl = baleHandle.startsWith('http') ? baleHandle : `https://ble.ir/${baleRaw}`;
+    result = result.replace(new RegExp(`https?:\\/\\/t\\.me\\/(s\\/)?${cleanTarget}\\b`, 'gi'), baleUrl);
+  }
+
+  if (cleanSource) {
+    result = result.replace(new RegExp(`@${cleanSource}\\b`, 'gi'), baleHandle);
+    const baleUrl = baleHandle.startsWith('http') ? baleHandle : `https://ble.ir/${baleRaw}`;
+    result = result.replace(new RegExp(`https?:\\/\\/t\\.me\\/(s\\/)?${cleanSource}\\b`, 'gi'), baleUrl);
+  }
+
+  if (baleReplaceId && baleReplaceId.trim()) {
+    const customBaleVal = baleReplaceId.trim();
+    if (conn.targetChannel) {
+      result = result.split(conn.targetChannel).join(customBaleVal);
+    }
+  }
+
+  return result;
 }
 
 // Telegram Public Channel Scraping Parser
@@ -1133,11 +1205,11 @@ async function scrapeTelegramChannel(sourceChannel: string): Promise<{ ok: boole
       
       const mediaItems: { type: 'photo' | 'video'; url: string }[] = [];
 
-      // Extract Photos: Search ONLY in photo wrappers outside text
+      // Extract Photos: Search ONLY in photo wrappers outside text and video wrappers
       $post.find(".tgme_widget_message_photo_wrap, .tgme_widget_message_photo, a.tgme_widget_message_photo_wrap, .tgme_widget_message_grouped_layer_item, .tgme_widget_message_grouped_item").each((_, photoEl) => {
         const $p = $(photoEl);
-        // Exclude elements inside message text or author/user avatar wrappers
-        if ($p.closest(".js-message_text, .tgme_widget_message_text, .emoji, tg-emoji, .tgme_widget_message_user_photo, .tgme_widget_message_author_photo").length > 0) {
+        // Exclude elements inside message text, author/user avatar wrappers, OR video wrappers
+        if ($p.closest(".js-message_text, .tgme_widget_message_text, .emoji, tg-emoji, .tgme_widget_message_user_photo, .tgme_widget_message_author_photo, .tgme_widget_message_video_player, .tgme_widget_message_video_wrap, .tgme_widget_message_video, a.tgme_widget_message_video_player").length > 0) {
           return;
         }
 
@@ -1178,11 +1250,24 @@ async function scrapeTelegramChannel(sourceChannel: string): Promise<{ ok: boole
         }
       });
 
-      const hasPhoto = mediaItems.some(m => m.type === 'photo');
-      const photoUrl = mediaItems.find(m => m.type === 'photo')?.url;
+      let hasPhoto = mediaItems.some(m => m.type === 'photo');
+      let photoUrl = mediaItems.find(m => m.type === 'photo')?.url;
 
       const hasVideo = mediaItems.some(m => m.type === 'video');
       const videoUrl = mediaItems.find(m => m.type === 'video')?.url;
+
+      // Check if this post is a single video post (not a real Telegram media group album)
+      const hasGroupedLayout = $post.find(".tgme_widget_message_grouped_layer, .tgme_widget_message_grouped_layer_item").length > 0 || $post.hasClass("tgme_widget_message_grouped");
+      if (hasVideo && !hasGroupedLayout) {
+        // Single video post: exclude video preview poster thumbnails from photo mediaItems
+        for (let i = mediaItems.length - 1; i >= 0; i--) {
+          if (mediaItems[i].type === 'photo') {
+            mediaItems.splice(i, 1);
+          }
+        }
+        hasPhoto = false;
+        photoUrl = undefined;
+      }
 
       // Extract Voice Audio URL
       let voiceUrl: string | undefined = undefined;
@@ -1236,7 +1321,7 @@ async function scrapeTelegramChannel(sourceChannel: string): Promise<{ ok: boole
       const hasDocument = $post.find(".tgme_widget_message_document").length > 0;
       const hasSticker = $post.find(".tgme_widget_message_sticker").length > 0;
       const hasGif = $post.find(".tgme_widget_message_gif_wrap").length > 0;
-      const isMediaGroup = mediaItems.length > 1 || $post.find(".tgme_widget_message_grouped_layer").length > 0 || $post.hasClass("tgme_widget_message_grouped");
+      const isMediaGroup = mediaItems.length > 1 && ($post.find(".tgme_widget_message_grouped_layer").length > 0 || $post.hasClass("tgme_widget_message_grouped"));
 
       let type: ForwardedMessageRecord["type"] = "text";
       if (isMediaGroup) type = "media_group";
@@ -1271,9 +1356,9 @@ async function scrapeTelegramChannel(sourceChannel: string): Promise<{ ok: boole
 
     posts.sort((a, b) => a.msgId - b.msgId);
 
-    // Upgrade photo quality by fetching dedicated post embed data
+    // Upgrade photo quality by fetching dedicated post embed data (photos only)
     for (const post of posts) {
-      if (post.hasPhoto || post.isMediaGroup) {
+      if ((post.hasPhoto || post.isMediaGroup) && !post.hasVideo && post.type !== "video") {
         const embedMedia = await fetchHighResEmbedMedia(cleanName, post.msgId);
         if (embedMedia.photos && embedMedia.photos.length > 0) {
           post.photoUrl = embedMedia.photos[0];
@@ -1365,25 +1450,25 @@ async function processConnectionSync(conn: TelegramConnection, forceAll: boolean
     const isVoiceOnlyFilter = filter === "voice_only";
     const isVideoNoteOnlyFilter = filter === "video_note_only";
 
-    const effectiveVideoNoteUrl = post.videoNoteUrl || ((post.hasVideoNote || post.type === 'video_note' || isVideoNoteOnlyFilter) ? post.videoUrl : undefined);
-    const effectiveVoiceUrl = post.voiceUrl || ((post.hasVoice || post.type === 'voice' || isVoiceOnlyFilter) ? (post.videoUrl || post.mediaItems?.find(m => m.url)?.url) : undefined);
+    const effectiveVideoNoteUrl = post.videoNoteUrl || ((post.hasVideoNote && post.type === 'video_note' && !post.hasVideo) ? post.videoUrl : undefined);
+    const effectiveVoiceUrl = post.voiceUrl || ((post.hasVoice && post.type === 'voice') ? (post.videoUrl || post.mediaItems?.find(m => m.url)?.url) : undefined);
 
     let payload: any = { method: "sendMessage", text: transformedText || "بدون متن" };
 
     if (!isTextOnlyFilter) {
-      if (effectiveVideoNoteUrl) {
+      if (effectiveVideoNoteUrl && (post.hasVideoNote || post.type === 'video_note' || isVideoNoteOnlyFilter)) {
         payload = {
           method: "sendVideoNote",
           video_note: effectiveVideoNoteUrl,
           ...(transformedText ? { caption: transformedText } : {}),
         };
-      } else if (effectiveVoiceUrl) {
+      } else if (effectiveVoiceUrl && (post.hasVoice || post.type === 'voice' || isVoiceOnlyFilter)) {
         payload = {
           method: "sendVoice",
           voice: effectiveVoiceUrl,
           ...(transformedText ? { caption: transformedText } : {}),
         };
-      } else if (post.mediaItems && post.mediaItems.length > 1) {
+      } else if (post.mediaItems && post.mediaItems.length > 1 && post.isMediaGroup) {
         // Album / Media Group
         const mediaArray = post.mediaItems.map((m, idx) => ({
           type: m.type,
@@ -1391,16 +1476,16 @@ async function processConnectionSync(conn: TelegramConnection, forceAll: boolean
           ...(idx === 0 && transformedText ? { caption: transformedText } : {}),
         }));
         payload = { method: "sendMediaGroup", media: mediaArray };
-      } else if (post.photoUrl) {
-        payload = {
-          method: "sendPhoto",
-          photo: post.photoUrl,
-          ...(transformedText ? { caption: transformedText } : {}),
-        };
-      } else if (post.videoUrl) {
+      } else if (post.videoUrl || post.hasVideo || post.type === "video") {
         payload = {
           method: "sendVideo",
-          video: post.videoUrl,
+          video: post.videoUrl || post.mediaItems?.find(m => m.type === 'video')?.url,
+          ...(transformedText ? { caption: transformedText } : {}),
+        };
+      } else if (post.photoUrl || post.hasPhoto || post.type === "photo") {
+        payload = {
+          method: "sendPhoto",
+          photo: post.photoUrl || post.mediaItems?.find(m => m.type === 'photo')?.url,
           ...(transformedText ? { caption: transformedText } : {}),
         };
       }
@@ -1469,7 +1554,21 @@ async function processConnectionSync(conn: TelegramConnection, forceAll: boolean
     const baleToken = conn.baleBotToken || conn.settings?.baleBotToken;
     const baleChannel = conn.baleTargetChannel || conn.settings?.baleTargetChannel;
     if ((conn.enableBale || conn.settings?.enableBale) && baleToken && baleChannel) {
-      sendBaleMessage(baleToken, baleChannel, payload).then((baleRes) => {
+      const balePayload = JSON.parse(JSON.stringify(payload));
+      if (balePayload.text) {
+        balePayload.text = transformTextForBale(balePayload.text, conn);
+      }
+      if (balePayload.caption) {
+        balePayload.caption = transformTextForBale(balePayload.caption, conn);
+      }
+      if (Array.isArray(balePayload.media)) {
+        balePayload.media = balePayload.media.map((item: any) => ({
+          ...item,
+          caption: item.caption ? transformTextForBale(item.caption, conn) : item.caption,
+        }));
+      }
+
+      sendBaleMessage(baleToken, baleChannel, balePayload).then((baleRes) => {
         if (baleRes.ok) {
           addLog(
             conn.id,
@@ -1535,7 +1634,7 @@ app.get("/api/connections", (req, res) => {
 
 app.post("/api/connections", async (req, res) => {
   try {
-    const { sourceChannel, targetChannel, botToken, enableBale, baleTargetChannel, baleBotToken, settings }: CreateConnectionDTO = req.body;
+    const { sourceChannel, targetChannel, botToken, enableBale, baleTargetChannel, baleBotToken, baleReplaceId, settings }: CreateConnectionDTO = req.body;
 
     if (!sourceChannel || !targetChannel || !botToken) {
       return res.status(400).json({ error: "لطفاً تمام فیلدها را وارد کنید." });
@@ -1570,6 +1669,8 @@ app.post("/api/connections", async (req, res) => {
       }
     }
 
+    const resolvedBaleReplaceId = baleReplaceId?.trim() || settings?.baleReplaceId?.trim() || undefined;
+
     const newConnection: TelegramConnection = {
       id: `conn_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
       sourceChannel: `@${cleanSource}`,
@@ -1586,6 +1687,7 @@ app.post("/api/connections", async (req, res) => {
       enableBale: !!enableBale,
       baleTargetChannel: baleTargetChannel?.trim() || undefined,
       baleBotToken: baleBotToken?.trim() || undefined,
+      baleReplaceId: resolvedBaleReplaceId,
       settings: settings || {
         rewriteMode: "none",
         aiPrompt: "متن را به صورت جذاب، روان و خوانا بازنویسی کن:",
@@ -1597,6 +1699,7 @@ app.post("/api/connections", async (req, res) => {
         enableBale: !!enableBale,
         baleTargetChannel: baleTargetChannel?.trim() || "",
         baleBotToken: baleBotToken?.trim() || "",
+        baleReplaceId: resolvedBaleReplaceId || "",
       },
     };
 
@@ -1634,7 +1737,8 @@ app.put("/api/connections/:id/settings", (req, res) => {
     contentFilter,
     enableBale,
     baleTargetChannel,
-    baleBotToken
+    baleBotToken,
+    baleReplaceId
   }: AdvancedSettings = req.body;
 
   if (enableBale) {
@@ -1649,6 +1753,7 @@ app.put("/api/connections/:id/settings", (req, res) => {
   conn.enableBale = !!enableBale;
   if (baleTargetChannel !== undefined) conn.baleTargetChannel = baleTargetChannel.trim();
   if (baleBotToken !== undefined) conn.baleBotToken = baleBotToken.trim();
+  if (baleReplaceId !== undefined) conn.baleReplaceId = baleReplaceId.trim();
 
   conn.settings = {
     rewriteMode: rewriteMode || "none",
@@ -1662,6 +1767,7 @@ app.put("/api/connections/:id/settings", (req, res) => {
     enableBale: !!enableBale,
     baleTargetChannel: baleTargetChannel?.trim() || "",
     baleBotToken: baleBotToken?.trim() || "",
+    baleReplaceId: baleReplaceId?.trim() || "",
   };
 
   writeJsonFile(CONNECTIONS_FILE, connections);
